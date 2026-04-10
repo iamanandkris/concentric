@@ -1362,16 +1362,36 @@ case class Metadata(
 
 given metadataContract: Contract[Metadata] = Contract.derived[Metadata]
 
-metadataContract.validate(Map(
+val raw = Map(
   "key"     -> "theme",
   "value"   -> "dark",
   "source"  -> "ui-settings"  // unknown — silently accepted
-))
+)
+
+metadataContract.validate(raw)
 // → Right(Metadata("theme", "dark"))
+
+// validate returns the typed model only; undeclared fields are not stored
+// on the case class.
 
 // Retrieve the extra fields:
 val extra: RawObject = metadataContract.extraFields(raw)
 // → Map("source" -> "ui-settings")
+
+// If you want both values to travel together in your application, wrap them
+// yourself.
+case class MetadataWithExtras(
+  metadata: Metadata,
+  extras: RawObject
+)
+
+val combined: Either[ContractViolations, MetadataWithExtras] =
+  metadataContract.validate(raw).map { metadata =>
+    MetadataWithExtras(
+      metadata = metadata,
+      extras = metadataContract.extraFields(raw)
+    )
+  }
 ```
 
 <details>
