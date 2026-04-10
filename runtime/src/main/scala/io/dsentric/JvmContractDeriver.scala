@@ -3,6 +3,7 @@ package io.dsentric
 import java.lang.annotation.Annotation
 import java.lang.reflect.{Constructor, Field, Parameter}
 import io.dsentric.annotations.*
+import io.dsentric.internal.ValidatorHelper
 import scala.reflect.ClassTag
 
 /**
@@ -32,51 +33,36 @@ import scala.reflect.ClassTag
  *
  * == Unsupported Scala-only features ==
  *
- *  - `@decodable` / `@extract` (wrapper-type macro derivation)
- *  - `@include` (field flattening from an inner contract type)
+ *  - `@decodable` (wrapper-type macro derivation)
  *  - `@discriminator` (sealed-trait tagged unions)
- *  - `@validateContract` / `@validateWith` (cross-field / custom validators)
  *  - Nested `Contract[T]` validation for inner object fields
  */
 object JvmContractDeriver:
 
+  private[dsentric] final case class DerivedField(
+    name:        String,
+    field:       Field,
+    javaType:    java.lang.reflect.Type,
+    annotations: List[Annotation],
+    isOptional:  Boolean,
+    isInclude:   Boolean,
+    children:    List[DerivedField] = Nil
+  )
+
   /** Derive [[FieldMeta]] for every non-synthetic, non-static declared field. */
   def derive[T](clazz: Class[T]): List[FieldMeta] =
-    val fields     = getFieldsInOrder(clazz)
-    val ctorParams = primaryConstructorParams(clazz)
+    describe(clazz).flatMap(toFieldMetas)
 
-    fields.zipWithIndex.map { (field, idx) =>
-      val anns  = effectiveAnnotations(field, ctorParams.lift(idx))
-      val jType = field.getGenericType
-      val isOpt = JvmTypeDecoder.isOptionalType(jType)
+  /** Read `@validateContract` validators declared on the class. */
+  def contractValidators[T](clazz: Class[T]): List[T => List[String]] =
+    Option(clazz.getAnnotation(classOf[validateContract]))
+      .toList
+      .flatMap(_.value().toList)
+      .map(vc => ValidatorHelper.makeContractValidator[T](vc.getName))
 
-      FieldMeta(
-        name           = field.getName,
-        isOptional     = isOpt,
-        hasDefault     = false,          // Java/Kotlin defaults live in constructFn
-        isImmutable    = has[immutable](anns),
-        isInternal     = has[internal](anns),
-        isReserved     = has[reserved](anns),
-        masked         = get[masked](anns).map(_.value()),
-        isNonEmpty     = has[nonEmpty](anns),
-        minLength      = get[minLength](anns).map(_.value().toInt),
-        maxLength      = get[maxLength](anns).map(_.value().toInt),
-        min            = get[min](anns).map(_.value()),
-        max            = get[max](anns).map(_.value()),
-        pattern        = get[pattern](anns).map(_.value()),
-        isEmail        = has[email](anns),
-        isUrl          = has[url](anns),
-        isUuid         = has[uuid](anns),
-        isFuture       = has[future](anns),
-        isPast         = has[past](anns),
-        isPositive     = has[positive](anns),
-        multipleOf     = get[multipleOf](anns).map(_.value()),
-        extractPattern = None,           // @extract is compile-time only
-        decoder        = JvmTypeDecoder.forType(jType),
-        schemaType     = schemaTypeFor(jType),
-        arrayItemType  = "any"
-      )
-    }
+  /** Describe the top-level field structure, expanding `@include` one level. */
+  private[dsentric] def describe[T](clazz: Class[T]): List[DerivedField] =
+    describeFields(clazz, expandIncludes = true)
 
   // ── Record support (Java 16+) ─────────────────────────────────────────────
 
@@ -88,6 +74,8 @@ object JvmContractDeriver:
   private def isRecord(clazz: Class[?]): Boolean =
     try classOf[Class[?]].getMethod("isRecord").invoke(clazz).asInstanceOf[Boolean]
     catch case _: NoSuchMethodException => false
+
+  private[dsentric] def isRecordClass(clazz: Class[?]): Boolean = isRecord(clazz)
 
   /**
    * Returns the record component names in declaration order.
@@ -156,6 +144,30 @@ object JvmContractDeriver:
         c.getParameters.toList
       }
 
+  private def describeFields(clazz: Class[?], expandIncludes: Boolean): List[DerivedField] =
+    val fields     = getFieldsInOrder(clazz)
+    val ctorParams = primaryConstructorParams(clazz)
+
+    fields.zipWithIndex.map { (field, idx) =>
+      val anns      = effectiveAnnotations(field, ctorParams.lift(idx))
+      val jType     = field.getGenericType
+      val isOpt     = JvmTypeDecoder.isOptionalType(jType)
+      val canExpand = expandIncludes && has[include](anns)
+      val children  =
+        if canExpand then describeFields(field.getType, expandIncludes = false)
+        else Nil
+
+      DerivedField(
+        name        = field.getName,
+        field       = field,
+        javaType    = jType,
+        annotations = anns,
+        isOptional  = isOpt,
+        isInclude   = canExpand,
+        children    = children
+      )
+    }
+
   // ── Annotation merging ────────────────────────────────────────────────────
 
   /**
@@ -178,6 +190,43 @@ object JvmContractDeriver:
   private def get[A <: Annotation : ClassTag](anns: List[Annotation]): Option[A] =
     val rc = implicitly[ClassTag[A]].runtimeClass
     anns.collectFirst { case a if rc.isInstance(a) => a.asInstanceOf[A] }
+
+  private def toFieldMetas(node: DerivedField): List[FieldMeta] =
+    if node.isInclude then node.children.flatMap(toFieldMetas)
+    else
+      val anns  = node.annotations
+      val jType = node.javaType
+      List(
+        FieldMeta(
+          name           = node.name,
+          isOptional     = node.isOptional,
+          hasDefault     = false,
+          isImmutable    = has[immutable](anns),
+          isInternal     = has[internal](anns),
+          isReserved     = has[reserved](anns),
+          masked         = get[masked](anns).map(_.value()),
+          isNonEmpty     = has[nonEmpty](anns),
+          minLength      = get[minLength](anns).map(_.value().toInt),
+          maxLength      = get[maxLength](anns).map(_.value().toInt),
+          min            = get[min](anns).map(_.value()),
+          max            = get[max](anns).map(_.value()),
+          pattern        = get[pattern](anns).map(_.value()),
+          isEmail        = has[email](anns),
+          isUrl          = has[url](anns),
+          isUuid         = has[uuid](anns),
+          isFuture       = has[future](anns),
+          isPast         = has[past](anns),
+          isPositive     = has[positive](anns),
+          multipleOf     = get[multipleOf](anns).map(_.value()),
+          extractPattern = get[extract](anns).map(_.value()),
+          decoder        = JvmTypeDecoder.forType(jType),
+          validators     = get[validateWith](anns).toList
+            .flatMap(_.value().toList)
+            .map(vc => ValidatorHelper.make(vc.getName)),
+          schemaType     = schemaTypeFor(jType),
+          arrayItemType  = "any"
+        )
+      )
 
   // ── Auto constructor builders ─────────────────────────────────────────────
 
@@ -253,6 +302,12 @@ object JvmContractDeriver:
       try ctor.newInstance(args*).asInstanceOf[T]
       catch
         case e: java.lang.reflect.InvocationTargetException => throw e.getCause
+
+  private[dsentric] def buildPrimaryConstructFnFromDerived[T](
+    clazz:      Class[T],
+    fieldOrder: List[DerivedField]
+  ): java.util.function.Function[java.util.Map[String, AnyRef], T] =
+    buildPrimaryConstructFn(clazz, fieldOrder.map(_.name))
 
   // ── JSON Schema type hint ─────────────────────────────────────────────────
 

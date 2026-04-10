@@ -50,6 +50,11 @@ final class JvmContractSpec extends SpecBase:
   )
 
   val openDocContract: JvmContract[TestJvmOpenDoc] = JvmContract.ofRecord(classOf[TestJvmOpenDoc])
+  val documentContract: JvmContract[TestJvmDocument] = JvmContract.ofRecord(classOf[TestJvmDocument])
+  val contactContract: JvmContract[TestJvmContact] = JvmContract.ofRecord(classOf[TestJvmContact])
+  val bookingRuleContract: JvmContract[TestJvmBooking] = JvmContract.ofRecord(classOf[TestJvmBooking])
+  val eventContract: JvmContract[TestJvmEvent] = JvmContract.ofRecord(classOf[TestJvmEvent])
+  val memberContract: JvmContract[TestJvmMember] = JvmContract.ofRecord(classOf[TestJvmMember])
 
   // ── Helper ────────────────────────────────────────────────────────────────
 
@@ -480,6 +485,78 @@ final class JvmContractSpec extends SpecBase:
       }
     ),
 
+    suite("@include")(
+
+      test("validates flat wire format and constructs nested type") {
+        val raw = jmap(
+          "title" -> "Hello World",
+          "body" -> "content",
+          "createdAt" -> Long.box(1000L),
+          "updatedAt" -> Long.box(2000L)
+        )
+        val result = documentContract.validate(raw)
+        assertTrue(
+          result.isValid,
+          result.getValue.get.title() == "Hello World",
+          result.getValue.get.body() == "content",
+          result.getValue.get.timestamps().createdAt() == 1000L,
+          result.getValue.get.timestamps().updatedAt() == 2000L
+        )
+      },
+
+      test("included required field missing produces MISSING violation") {
+        val raw = jmap("title" -> "No Timestamps")
+        val result = documentContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v => v.path == "createdAt" && v.code == "MISSING")
+        )
+      },
+
+      test("@immutable on included field is enforced in validatePatch") {
+        val current = jmap(
+          "title" -> "Original",
+          "createdAt" -> Long.box(100L),
+          "updatedAt" -> Long.box(200L)
+        )
+        val patch = jmap("createdAt" -> Long.box(999L))
+        val result = documentContract.validatePatch(current, patch)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v => v.path == "createdAt" && v.code == "IMMUTABLE")
+        )
+      },
+
+      test("toRaw flattens @include fields back to wire format") {
+        val raw = jmap(
+          "title" -> "Round-trip",
+          "body" -> "content",
+          "createdAt" -> Long.box(111L),
+          "updatedAt" -> Long.box(222L)
+        )
+        val result = documentContract.validate(raw)
+        val out = documentContract.toRaw(result.getValue.get)
+        assertTrue(
+          out.get("title") == "Round-trip",
+          out.get("body") == "content",
+          out.get("createdAt") == Long.box(111L),
+          out.get("updatedAt") == Long.box(222L),
+          !out.containsKey("timestamps")
+        )
+      },
+
+      test("jsonSchema properties are flat for included fields") {
+        val schema = documentContract.jsonSchema()
+        val props = schema.get("properties").asInstanceOf[java.util.Map[String, AnyRef]]
+        assertTrue(
+          props.containsKey("title"),
+          props.containsKey("createdAt"),
+          props.containsKey("updatedAt"),
+          !props.containsKey("timestamps")
+        )
+      }
+    ),
+
     // ── ofRecord — zero-boilerplate auto-constructor ──────────────────────
 
     suite("ofRecord — auto-constructor for Java records")(
@@ -820,6 +897,53 @@ final class JvmContractSpec extends SpecBase:
           raw.get("age") == Int.box(31),
           raw.get("email") == "a@b.com"
         )
+      }
+    ),
+
+    suite("JVM feature parity gaps")(
+
+      test("@validateWith is enforced on JvmContract") {
+        val raw = jmap("phone" -> "not-a-phone", "name" -> "Alice")
+        val result = contactContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "phone" && v.code == "CONSTRAINT(validateWith)"
+          )
+        )
+      },
+
+      test("@validateContract is enforced on JvmContract") {
+        val raw = jmap(
+          "checkIn" -> Long.box(2000L),
+          "checkOut" -> Long.box(1000L),
+          "guestId" -> "guest-123"
+        )
+        val result = bookingRuleContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "" && v.code == "CONSTRAINT(validateContract)"
+          )
+        )
+      },
+
+      test("@extract on a field is enforced on JvmContract") {
+        val raw = jmap("date" -> "not-a-date")
+        val result = eventContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "date" && v.code == "CONSTRAINT(extract)"
+          )
+        )
+      },
+
+      test("@decodable wrapper fields are currently unsupported on JvmContract") {
+        val raw = jmap("email" -> "alice@example.com", "name" -> "Alice")
+        assertThrows[IllegalArgumentException] {
+          memberContract.validate(raw)
+        }
       }
     )
   )

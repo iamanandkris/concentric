@@ -573,6 +573,19 @@ final class ValidateSpec extends SpecBase:
           metas.contains("updatedAt"),
           !metas.contains("timestamps")
         )
+      },
+
+      test("nested @include does not recursively flatten inner included fields") {
+        val deepContract = Contract.derived[DeepDocument]
+        val metas = deepContract.fieldMetas.map(_.name)
+        assertTrue(
+          metas.contains("title"),
+          metas.contains("timestamps"),
+          metas.contains("createdBy"),
+          !metas.contains("createdAt"),
+          !metas.contains("updatedAt"),
+          !metas.contains("audit")
+        )
       }
     )
 

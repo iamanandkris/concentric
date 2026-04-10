@@ -177,6 +177,18 @@ given RawDecoder[Timestamps] with
       yield Timestamps(ca, sm.get("updatedAt").flatMap(RawDecoder[Long].decode).getOrElse(0L))
     case _ => None
 
+@contract
+case class AuditStamp(
+  @include              timestamps: Timestamps,
+                        createdBy:  String
+)
+
+@contract
+case class DeepDocument(
+  @nonEmpty             title: String,
+  @include              audit: AuditStamp
+)
+
 // ── @decodable wrapper types ──────────────────────────────────────────────────
 
 @decodable

@@ -95,7 +95,7 @@ given userContract: Contract[User] = Contract.derived[User]
 That's it. The macro reads every annotation at **compile time** and generates a zero-overhead validator.
 
 <details>
-<summary>Java equivalent</summary>
+<summary>Java</summary>
 
 ```java
 import io.dsentric.annotations.*;
@@ -119,7 +119,7 @@ static final JvmContract<User> userContract = JvmContract.ofRecord(User.class);
 </details>
 
 <details>
-<summary>Kotlin equivalent</summary>
+<summary>Kotlin</summary>
 
 ```kotlin
 import io.dsentric.annotations.*
@@ -151,7 +151,7 @@ val userContract: JvmContract<User> = JvmContract.ofPrimary(User::class.java)
 | Annotation | Usage | Description |
 |---|---|---|
 | `@contract` | `@contract` or `@contract(open = true)` | Marks the class as a dsentric contract. When `open = true`, unknown fields are accepted silently. |
-| `@validateContract` | `@validateContract(Array(classOf[MyValidator]))` | Attaches cross-field validators that run after all field checks pass. |
+| `@validateContract` | `@validateContract(Array(classOf[MyValidator]))` | Attaches cross-field validators that run after all field checks pass. Supported by both Scala `Contract[T]` and `JvmContract`, though authoring the validator class is currently more natural in Scala. |
 
 ### Field-level annotations
 
@@ -196,16 +196,16 @@ val userContract: JvmContract<User> = JvmContract.ofPrimary(User::class.java)
 
 | Annotation | Description |
 |---|---|
-| `@validateWith(Array(classOf[MyValidator]))` | Attaches one or more `FieldValidator[A]` implementations to a field. |
+| `@validateWith(Array(classOf[MyValidator]))` | Attaches one or more `FieldValidator[A]` implementations to a field. Supported on both Scala `Contract[T]` and `JvmContract`. |
 
 #### Structural annotations
 
 | Annotation | Description |
 |---|---|
 | `@include` | Inlines a nested contract type's fields into the parent's flat wire format. |
-| `@discriminator(key, left, right)` | Configures a tagged-union wire format for `Either[A, B]` fields. |
-| `@decodable` | Marks a single-field wrapper class for automatic `RawDecoder` derivation. |
-| `@extract(regex)` | On a field: regex constraint. On a `@decodable` class: structured string parser with capture groups. |
+| `@discriminator(key, left, right)` | Configures a tagged-union wire format for `Either[A, B]` fields. Scala-only today; the JVM API does not yet have a first-class sum-type / tagged-union derivation story. |
+| `@decodable` | Marks a single-field wrapper class for automatic `RawDecoder` derivation. Scala-only today; JVM reflection does not yet derive wrapper decoders from `@decodable`. |
+| `@extract(regex)` | On a field: regex constraint. On a `@decodable` class: structured string parser with capture groups. Field-level use is supported on both Scala and `JvmContract`; `@decodable` parsing remains Scala-only. |
 
 ---
 
@@ -1070,14 +1070,7 @@ public record Profile(
     @min(0)                 Optional<Integer>   score
 ) {}
 
-JvmContract<Profile> profileContract = JvmContract.of(
-    Profile.class,
-    fields -> new Profile(
-        (String)  fields.get("username"),
-        (Optional<String>)  fields.get("bio"),
-        (Optional<Integer>) fields.get("score")
-    )
-);
+JvmContract<Profile> profileContract = JvmContract.ofRecord(Profile.class);
 
 // bio absent:
 profileContract.validate(Map.of("username", "alice"));
@@ -1156,22 +1149,12 @@ Violations from `ContractValidator` carry:
 - `code`: `ViolationCode.ContractRule("validateContract")`
 - `message`: the string returned from `validate`
 
+`JvmContract` enforces `@validateContract` too. One caveat: `ContractValidator[T]` currently returns a Scala `List[String]`, so authoring the validator class itself is still more ergonomic in Scala than in plain Java.
+
 <details>
 <summary>Java</summary>
 
 ```java
-import io.dsentric.ContractValidator;
-import java.util.List;
-
-public class CheckInBeforeCheckOut implements ContractValidator<Booking> {
-    @Override
-    public List<String> validate(Booking b) {
-        if (b.checkIn() >= b.checkOut())
-            return List.of("checkIn must be before checkOut");
-        return List.of();
-    }
-}
-
 @contract
 @validateContract({CheckInBeforeCheckOut.class})
 public record Booking(
@@ -1187,12 +1170,6 @@ public record Booking(
 <summary>Kotlin</summary>
 
 ```kotlin
-class CheckInBeforeCheckOut : ContractValidator<Booking> {
-    override fun validate(b: Booking): List<String> =
-        if (b.checkIn >= b.checkOut) listOf("checkIn must be before checkOut")
-        else emptyList()
-}
-
 @contract
 @validateContract([CheckInBeforeCheckOut::class])
 data class Booking(
@@ -1233,12 +1210,15 @@ case class Contact(
 )
 ```
 
-Multiple validators are all run; their failures are accumulated together.
+Multiple validators are all run; their failures are accumulated together. `JvmContract` enforces `@validateWith` on Java and Kotlin models as well.
 
 <details>
 <summary>Java</summary>
 
 ```java
+import io.dsentric.annotations.*;
+import java.util.List;
+
 public class E164PhoneValidator implements FieldValidator<String> {
     @Override
     public List<String> validate(String value) {
@@ -1250,9 +1230,35 @@ public class E164PhoneValidator implements FieldValidator<String> {
 
 @contract
 public record Contact(
-    @validateWith({E164PhoneValidator.class, NoSpacesValidator.class}) String phone,
+    @validateWith({E164PhoneValidator.class}) String phone,
     String name
 ) {}
+```
+
+</details>
+
+<details>
+<summary>Kotlin</summary>
+
+```kotlin
+import io.dsentric.annotations.FieldValidator
+import io.dsentric.annotations.contract
+import io.dsentric.annotations.validateWith
+
+class E164PhoneValidator : FieldValidator<String> {
+    override fun validate(value: String): List<String> =
+        if (value.matches(Regex("\\+[1-9]\\d{6,14}")))
+            emptyList()
+        else
+            listOf("'$value' is not a valid E.164 phone number")
+}
+
+@contract
+data class Contact(
+    @field:validateWith([E164PhoneValidator::class])
+    val phone: String,
+    val name: String
+)
 ```
 
 </details>
@@ -1300,6 +1306,85 @@ articleContract.toRaw(article)
 
 Constraints, `@immutable`, and all other annotations on inner fields are fully respected when the parent is validated or patched.
 
+<details>
+<summary>Java</summary>
+
+```java
+import io.dsentric.annotations.*;
+import io.dsentric.JvmContract;
+import java.util.Map;
+
+@contract
+public record Timestamps(
+    @immutable Long createdAt,
+               Long updatedAt
+) {}
+
+@contract
+public record Article(
+    @immutable @internal Long id,
+    @nonEmpty            String title,
+    @nonEmpty            String content,
+    @include             Timestamps timestamps
+) {}
+
+JvmContract<Article> articleContract = JvmContract.ofRecord(Article.class);
+
+Map<String, Object> raw = Map.ofEntries(
+    Map.entry("id", 1L),
+    Map.entry("title", "Hello World"),
+    Map.entry("content", "..."),
+    Map.entry("createdAt", 1700000000000L),
+    Map.entry("updatedAt", 1700001000000L)
+);
+
+ValidationResult<Article> result = articleContract.validate(raw);
+Map<String, Object> out = articleContract.toRaw(result.getValue().get());
+// out is flat: id, title, content, createdAt, updatedAt
+```
+
+</details>
+
+<details>
+<summary>Kotlin</summary>
+
+```kotlin
+import io.dsentric.JvmContract
+import io.dsentric.annotations.*
+
+@contract
+data class Timestamps(
+    @field:immutable val createdAt: Long,
+    val updatedAt: Long
+)
+
+@contract
+data class Article(
+    @field:immutable @field:internal val id: Long,
+    @field:nonEmpty val title: String,
+    @field:nonEmpty val content: String,
+    @field:include val timestamps: Timestamps
+)
+
+val articleContract: JvmContract<Article> = JvmContract.ofPrimary(Article::class.java)
+
+val raw = mapOf<String, Any>(
+    "id" to 1L,
+    "title" to "Hello World",
+    "content" to "...",
+    "createdAt" to 1700000000000L,
+    "updatedAt" to 1700001000000L
+)
+
+val result = articleContract.validate(raw)
+val out = articleContract.toRaw(result.value.get())
+// out is flat: id, title, content, createdAt, updatedAt
+```
+
+</details>
+
+As on the Scala side, only one level of `@include` flattening is supported; recursive flattening is not performed.
+
 ---
 
 ## 19. @discriminator — tagged-union wire format
@@ -1339,9 +1424,13 @@ Without `@discriminator` the default `Either` wire format is:
 {"owner": "Alice", "pet": {"left": {"name": "Whiskers", "indoor": true}}}
 ```
 
+`@discriminator` is currently Scala-only. The JVM API does not yet expose a first-class tagged-union / sum-type model comparable to Scala’s `Either[A, B]` derivation, so there is no Java/Kotlin example yet.
+
 ---
 
 ## 20. @decodable and @extract — structured string types
+
+`@decodable` remains Scala-only in practice today. Runtime tests show that `JvmContract` does not support `@decodable` wrapper fields yet, because JVM reflection does not currently derive wrapper `RawDecoder`s from the annotation. Field-level `@extract`, however, is enforced on `JvmContract`.
 
 ### @decodable — value wrapper types
 
@@ -1420,6 +1509,8 @@ case class Event(
 )
 // Produces ConstraintFailed("extract") if the pattern doesn't match
 ```
+
+Field-level `@extract` is enforced by `JvmContract` too.
 
 ---
 

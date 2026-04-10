@@ -81,87 +81,26 @@ class JvmContract[T](
   isOpen:      Boolean = false
 ):
 
+  private val derivedFields: List[JvmContractDeriver.DerivedField] = JvmContractDeriver.describe(clazz)
   val fieldMetas: List[FieldMeta] = JvmContractDeriver.derive(clazz)
+  private val contractValidators: List[T => List[String]] = JvmContractDeriver.contractValidators(clazz)
 
   // ── Internal ContractImpl wiring ──────────────────────────────────────────
 
   /** Convert a validated Scala Map → Java Map and call the user's constructFn. */
   private val scalaConstructFn: Map[String, Any] => T = (fields: Map[String, Any]) =>
-    val javaMap = new java.util.HashMap[String, AnyRef]()
-
-    fields.foreach { (k, v) =>
-      // For Optional fields, convert Scala Option back to java.util.Optional
-      fieldMetas.find(_.name == k).fold {
-        javaMap.put(k, v.asInstanceOf[AnyRef])
-      } { meta =>
-        if meta.isOptional then
-          val opt: java.util.Optional[AnyRef] = v match
-            case Some(inner) => java.util.Optional.of(inner.asInstanceOf[AnyRef])
-            case None        => java.util.Optional.empty[AnyRef]()
-            case jOpt: java.util.Optional[?] => jOpt.asInstanceOf[java.util.Optional[AnyRef]]
-            case other       => java.util.Optional.of(other.asInstanceOf[AnyRef])
-          javaMap.put(k, opt)
-        else
-          javaMap.put(k, v.asInstanceOf[AnyRef])
-      }
-    }
-    // Ensure every Optional field that was absent from raw arrives as Optional.empty()
-    fieldMetas.foreach { meta =>
-      if meta.isOptional && !javaMap.containsKey(meta.name) then
-        javaMap.put(meta.name, java.util.Optional.empty[AnyRef]())
-    }
-    constructFn.apply(javaMap)
+    constructFn.apply(buildStructuredJavaMap(fields, derivedFields))
 
   /** Reflective toRaw: T → RawObject. */
   private val toRawFn: T => RawObject = (t: T) =>
-    def productToMap(v: Any): Map[String, Any] = v match
-      case m: java.util.Map[?, ?] =>
-        m.asInstanceOf[java.util.Map[String, Any]].asScala.toMap
-      case m: Map[?, ?] =>
-        m.asInstanceOf[Map[String, Any]]
-      case p: Product =>
-        p.productElementNames.zip(p.productIterator).map { case (n, vv) => n -> vv }.toMap
-      case other =>
-        Map("value" -> other)
-
-    fieldMetas.flatMap { meta =>
-      val f = clazz.getDeclaredField(meta.name)
-      f.setAccessible(true)
-      val v = f.get(t)
-      // Convert java.util.Optional back to Scala Option for the raw map
-      val scalaV: Any = v match
-        case opt: java.util.Optional[?] => if opt.isEmpty then None else Some(opt.get)
-        case other                       => other
-
-      if scalaV == null then None
-      else
-        // Handle @discriminator on Either fields: emit a tagged map inside the field
-        val discrOpt = Option(f.getAnnotation(classOf[io.dsentric.annotations.discriminator]))
-        val encoded: Any = (discrOpt, scalaV) match
-          case (Some(discr), e: scala.util.Either[?, ?]) =>
-            val base: Map[String, Any] = e match
-              case scala.util.Left(l)  => productToMap(l)
-              case scala.util.Right(r) => productToMap(r)
-            val tag: String = e match
-              case scala.util.Left(_)  => discr.left()
-              case scala.util.Right(_) => discr.right()
-            base + (discr.value() -> tag)
-          case (None, e: scala.util.Either[?, ?]) =>
-            e match
-              case scala.util.Left(l)  => Map("left"  -> productToMap(l))
-              case scala.util.Right(r) => Map("right" -> productToMap(r))
-          case _ =>
-            scalaV
-
-        Some(meta.name -> encoded)
-    }.toMap
+    extractRawPairs(t, derivedFields).toMap
 
   private val impl: Contract[T] = new ContractImpl[T](
     fieldMetas         = fieldMetas,
     isOpen             = isOpen,
     constructFn        = scalaConstructFn,
     toRawFn            = toRawFn,
-    contractValidators = Nil
+    contractValidators = contractValidators
   )
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -388,6 +327,105 @@ class JvmContract[T](
     case l: Long     => java.lang.Long.valueOf(l)
     case d: Double   => java.lang.Double.valueOf(d)
     case other       => other.asInstanceOf[AnyRef]
+
+  private def toJavaValue(value: Any): AnyRef = value match
+    case null                                      => null
+    case Some(inner)                               => inner.asInstanceOf[AnyRef]
+    case None                                      => null
+    case opt: java.util.Optional[?]                => opt.asInstanceOf[AnyRef]
+    case b: Boolean                                => java.lang.Boolean.valueOf(b)
+    case i: Int                                    => java.lang.Integer.valueOf(i)
+    case l: Long                                   => java.lang.Long.valueOf(l)
+    case d: Double                                 => java.lang.Double.valueOf(d)
+    case f: Float                                  => java.lang.Float.valueOf(f)
+    case other                                     => other.asInstanceOf[AnyRef]
+
+  private def toOptionalValue(valueOpt: Option[Any]): java.util.Optional[AnyRef] =
+    valueOpt match
+      case Some(Some(inner))                => java.util.Optional.ofNullable(toJavaValue(inner))
+      case Some(None) | None                => java.util.Optional.empty[AnyRef]()
+      case Some(opt: java.util.Optional[?]) => opt.asInstanceOf[java.util.Optional[AnyRef]]
+      case Some(other)                      => java.util.Optional.ofNullable(toJavaValue(other))
+
+  private def buildStructuredJavaMap(
+    fields: Map[String, Any],
+    nodes:  List[JvmContractDeriver.DerivedField]
+  ): java.util.Map[String, AnyRef] =
+    val javaMap = new java.util.LinkedHashMap[String, AnyRef]()
+    nodes.foreach { node =>
+      if node.isInclude then
+        javaMap.put(node.name, constructIncludedValue(fields, node))
+      else if node.isOptional then
+        javaMap.put(node.name, toOptionalValue(fields.get(node.name)))
+      else
+        fields.get(node.name).foreach(v => javaMap.put(node.name, toJavaValue(v)))
+    }
+    javaMap
+
+  private def constructIncludedValue(
+    fields: Map[String, Any],
+    node:   JvmContractDeriver.DerivedField
+  ): AnyRef =
+    val childMap = buildStructuredJavaMap(fields, node.children)
+    val childClass = node.field.getType.asInstanceOf[Class[AnyRef]]
+    val ctor =
+      if JvmContractDeriver.isRecordClass(childClass) then
+        JvmContractDeriver.buildRecordConstructFn(childClass)
+      else
+        JvmContractDeriver.buildPrimaryConstructFnFromDerived(
+          childClass,
+          JvmContractDeriver.describe(childClass)
+        )
+    ctor.apply(childMap).asInstanceOf[AnyRef]
+
+  private def extractRawPairs(
+    obj:   Any,
+    nodes: List[JvmContractDeriver.DerivedField]
+  ): List[(String, Any)] =
+    nodes.flatMap { node =>
+      val rawValue = node.field.get(obj)
+      val scalaValue: Any = rawValue match
+        case opt: java.util.Optional[?] => if opt.isEmpty then None else Some(opt.get)
+        case other                      => other
+
+      scalaValue match
+        case null | None => Nil
+        case value if node.isInclude =>
+          extractRawPairs(value, node.children)
+        case value =>
+          List(node.name -> encodeFieldValue(node, value))
+    }
+
+  private def encodeFieldValue(
+    node:  JvmContractDeriver.DerivedField,
+    value: Any
+  ): Any =
+    def productToMap(v: Any): Map[String, Any] = v match
+      case m: java.util.Map[?, ?] =>
+        m.asInstanceOf[java.util.Map[String, Any]].asScala.toMap
+      case m: Map[?, ?] =>
+        m.asInstanceOf[Map[String, Any]]
+      case p: Product =>
+        p.productElementNames.zip(p.productIterator).map { case (n, vv) => n -> vv }.toMap
+      case other =>
+        Map("value" -> other)
+
+    val discrOpt = Option(node.field.getAnnotation(classOf[io.dsentric.annotations.discriminator]))
+    (discrOpt, value) match
+      case (Some(discr), e: scala.util.Either[?, ?]) =>
+        val base: Map[String, Any] = e match
+          case scala.util.Left(l)  => productToMap(l)
+          case scala.util.Right(r) => productToMap(r)
+        val tag: String = e match
+          case scala.util.Left(_)  => discr.left()
+          case scala.util.Right(_) => discr.right()
+        base + (discr.value() -> tag)
+      case (None, e: scala.util.Either[?, ?]) =>
+        e match
+          case scala.util.Left(l)  => Map("left"  -> productToMap(l))
+          case scala.util.Right(r) => Map("right" -> productToMap(r))
+      case _ =>
+        value
 
   private def toScalaRaw(javaMap: java.util.Map[String, AnyRef]): RawObject =
     val optionalNames: Set[String] = fieldMetas.filter(_.isOptional).map(_.name).toSet
