@@ -911,11 +911,23 @@ userContract.applyPatch(currentRaw, typed)
 <details>
 <summary>Java / Kotlin</summary>
 
-Java and Kotlin callers use `validatePatch` with a plain `Map` — the fluent `Patch` builder requires the Scala macro path.
+Java and Kotlin callers can use `validatePatch` with a plain `Map`, or use the minimal `JvmPatch` builder when a fluent raw-map wrapper is more convenient. Unlike Scala `Patch[T]`, `JvmPatch` uses string field names and performs no compile-time field checking.
 
 ```java
 Map<String, Object> patch = Map.of("name", "Alicia", "age", 31);
 userContract.validatePatch(currentRaw, patch);
+
+JvmPatch patch2 = JvmPatch.empty()
+    .set("name", "Alicia")
+    .set("age", 31);
+userContract.validatePatch(currentRaw, patch2);
+```
+
+```kotlin
+val patch = JvmPatch.empty()
+    .set("name", "Alicia")
+    .set("age", 31)
+userContract.validatePatch(currentRaw, patch)
 ```
 
 </details>
@@ -1047,7 +1059,8 @@ Profile.validate(Map("username" -> "alice", "score" -> -1))
 // → Left: ConstraintFailed("min") at "score"
 ```
 
-### Java: `java.util.Optional<T>`
+<details>
+<summary>Java</summary>
 
 ```java
 @contract
@@ -1076,6 +1089,8 @@ profileContract.validate(Map.of("username", "alice", "bio", "Hello"));
 profileContract.validate(Map.of("username", "alice", "score", Optional.of(-1)));
 // → error: CONSTRAINT(min) at "score"
 ```
+
+</details>
 
 <details>
 <summary>Kotlin</summary>
@@ -1661,6 +1676,7 @@ result.getErrors()              // List<JvmViolation> — empty when valid
 |---|---|
 | `validate(Map)` | Full validation. |
 | `validatePatch(Map, Map)` | Patch validation against current state. |
+| `validatePatch(Map, JvmPatch)` | Patch validation using the fluent JVM patch builder. |
 | `validatePartial(Map)` | Partial validation — returns `List<JvmViolation>`, no missing-field errors. |
 | `collectViolations(Map)` | All violations without constructing T. |
 | `sanitize(Map)` | Strips `@internal`, masks `@masked`. Returns `Map<String, Object>`. |
@@ -1672,7 +1688,20 @@ result.getErrors()              // List<JvmViolation> — empty when valid
 | `jsonSchemaJson()` | JSON Schema (draft-07) as a compact JSON string. |
 | `jsonSchemaJson(int)` | JSON Schema as a pretty-printed JSON string. |
 | `jsonSchema()` | JSON Schema as a deeply-converted `Map<String, Object>`. |
+| `extraFields(Map)` | Unknown fields from a raw object as a deeply-converted `Map<String, Object>`. |
 | `fieldMetas` | The `List<FieldMeta>` for this contract. |
+
+### JvmPatch
+
+`JvmPatch` is a small Java/Kotlin-friendly builder for raw patch maps:
+
+```java
+JvmPatch patch = JvmPatch.empty()
+    .set("name", "Alicia")
+    .set("age", 31);
+```
+
+It exists as a convenience wrapper over `Map<String, Object>`; field names remain strings and are checked only when the patch is validated.
 
 ### Kotlin annotation placement
 

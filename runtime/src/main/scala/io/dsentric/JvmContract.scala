@@ -190,6 +190,17 @@ class JvmContract[T](
     toResult(impl.validatePatch(toScalaRaw(current), toScalaRaw(patch)))
 
   /**
+   * Validate a partial update (patch) against the current stored state.
+   *
+   * Convenience overload for callers using [[JvmPatch]].
+   */
+  def validatePatch(
+    current: java.util.Map[String, AnyRef],
+    patch:   JvmPatch
+  ): ValidationResult[T] =
+    validatePatch(current, patch.toMap())
+
+  /**
    * Validate only the fields that are present in a partial raw map.
    *
    * Unlike [[validate]], absent required fields do **not** produce

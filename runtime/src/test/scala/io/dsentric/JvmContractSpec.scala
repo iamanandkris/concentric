@@ -259,6 +259,20 @@ final class JvmContractSpec extends SpecBase:
             v.path == "age" && v.code == "CONSTRAINT(min)"
           )
         )
+      },
+
+      test("JvmPatch builder can be passed directly to validatePatch") {
+        val current = jmap("id" -> Long.box(1L), "name" -> "Alice", "age" -> Int.box(30),
+                           "email" -> "a@b.com", "password" -> "pw")
+        val patch = JvmPatch.empty()
+          .set("name", "Alicia")
+          .set("age", Int.box(31))
+        val result = userContract.validatePatch(current, patch)
+        assertTrue(
+          result.isValid,
+          result.getValue.get.name() == "Alicia",
+          result.getValue.get.age() == 31
+        )
       }
     ),
 
@@ -771,6 +785,40 @@ final class JvmContractSpec extends SpecBase:
         assertTrue(
           extra.get("meta").isInstanceOf[java.util.Map[?, ?]],
           extra.get("tags").isInstanceOf[java.util.List[?]]
+        )
+      }
+    ),
+
+    suite("JvmPatch")(
+
+      test("set accumulates fields and preserves insertion order in toMap") {
+        val patch = JvmPatch.empty()
+          .set("name", "Alicia")
+          .set("age", Int.box(31))
+        val it = patch.toMap().keySet().iterator()
+        assertTrue(
+          patch.size() == 2,
+          !patch.isEmpty(),
+          it.next() == "name",
+          it.next() == "age"
+        )
+      },
+
+      test("from copies an existing raw map") {
+        val patch = JvmPatch.from(jmap("name" -> "Alicia"))
+        patch.set("age", Int.box(31))
+        val raw = patch.toMap()
+        assertTrue(raw.get("name") == "Alicia", raw.get("age") == Int.box(31))
+      },
+
+      test("putAll merges raw map entries") {
+        val patch = JvmPatch.empty().set("name", "Alicia")
+        patch.putAll(jmap("age" -> Int.box(31), "email" -> "a@b.com"))
+        val raw = patch.toMap()
+        assertTrue(
+          raw.get("name") == "Alicia",
+          raw.get("age") == Int.box(31),
+          raw.get("email") == "a@b.com"
         )
       }
     )
