@@ -818,6 +818,65 @@ Annotation → JSON Schema mapping:
 | `@reserved` | `"x-reserved": true` |
 | `@masked("s")` | `"x-masked": "s"` |
 
+<details>
+<summary>Java</summary>
+
+`JvmContract` exposes two forms. The JSON string is the most convenient — feed it directly to a `/schema` REST endpoint or hand it to Jackson/Gson:
+
+```java
+// Compact JSON string
+String schema = userContract.jsonSchemaJson();
+// → {"$schema":"http://json-schema.org/...","additionalProperties":false,"properties":{...}}
+
+// Pretty-printed (2-space indent)
+String pretty = userContract.jsonSchemaJson(2);
+
+// Or as a deeply-converted java.util.Map if you need to inspect the structure
+Map<String, Object> schemaMap = userContract.jsonSchema();
+Map<?, ?> props = (Map<?, ?>) schemaMap.get("properties");
+```
+
+A typical Spring Boot schema endpoint looks like:
+
+```java
+@GetMapping("/schema/user")
+public ResponseEntity<String> userSchema() {
+    return ResponseEntity.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(userContract.jsonSchemaJson());
+}
+```
+
+</details>
+
+<details>
+<summary>Kotlin</summary>
+
+```kotlin
+// Compact JSON string — return directly from a Ktor/Spring route
+val schema: String = userContract.jsonSchemaJson()
+
+// Pretty-printed
+val pretty: String = userContract.jsonSchemaJson(2)
+
+// As a Map if you need to merge with existing OpenAPI structures
+val schemaMap: Map<String, Any> = userContract.jsonSchema()
+val properties = schemaMap["properties"] as Map<*, *>
+```
+
+Ktor example:
+
+```kotlin
+get("/schema/user") {
+    call.respondText(
+        text        = userContract.jsonSchemaJson(2),
+        contentType = ContentType.Application.Json
+    )
+}
+```
+
+</details>
+
 ---
 
 ## 12. Patch — type-safe partial updates
@@ -1544,6 +1603,9 @@ result.getErrors()              // List<JvmViolation> — empty when valid
 | `toRaw(T)` | Serializes T back to a raw map. |
 | `toJson(T)` | Serializes T directly to a compact JSON string. |
 | `toJson(T, int)` | Same but pretty-printed with the given indent width. |
+| `jsonSchemaJson()` | JSON Schema (draft-07) as a compact JSON string. |
+| `jsonSchemaJson(int)` | JSON Schema as a pretty-printed JSON string. |
+| `jsonSchema()` | JSON Schema as a deeply-converted `Map<String, Object>`. |
 | `fieldMetas` | The `List<FieldMeta>` for this contract. |
 
 ### Kotlin annotation placement

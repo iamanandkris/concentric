@@ -284,6 +284,54 @@ class JvmContract[T](
   def sanitizeJson(raw: java.util.Map[String, AnyRef], indent: Int): String =
     RawJson.stringify(impl.sanitize(toScalaRaw(raw)), indent)
 
+  /**
+   * Derive a JSON Schema (draft-07) document for this contract and return it
+   * as a compact JSON string.
+   *
+   * This is the most convenient form for Java/Kotlin callers — the string can
+   * be returned directly from a `/schema` endpoint, passed to Jackson/Gson for
+   * further processing, or logged for debugging.
+   *
+   * {{{
+   * // Java
+   * String schema = userContract.jsonSchemaJson();
+   * // → {"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,...}
+   *
+   * // Kotlin
+   * val schema: String = userContract.jsonSchemaJson()
+   * }}}
+   */
+  def jsonSchemaJson(): String = RawJson.stringify(impl.jsonSchema)
+
+  /**
+   * Derive a JSON Schema (draft-07) document for this contract and return it
+   * as an indented JSON string.
+   *
+   * @param indent  Number of spaces per indentation level (e.g. `2`).
+   */
+  def jsonSchemaJson(indent: Int): String = RawJson.stringify(impl.jsonSchema, indent)
+
+  /**
+   * Derive a JSON Schema (draft-07) document for this contract as a
+   * deeply-converted `java.util.Map`.
+   *
+   * Useful when you need to programmatically inspect or mutate the schema
+   * structure (e.g. to merge it with an existing OpenAPI document).  Nested
+   * maps and arrays are fully converted to Java types:
+   *
+   *  - `Map[String, Any]`  →  `java.util.LinkedHashMap<String, Object>`
+   *  - `List[_]`           →  `java.util.ArrayList<Object>`
+   *  - Scalars             →  boxed as-is (`String`, `Integer`, `Boolean`, …)
+   *
+   * {{{
+   * // Java
+   * Map<String, Object> schema = userContract.jsonSchema();
+   * Map<?, ?> props = (Map<?, ?>) schema.get("properties");
+   * }}}
+   */
+  def jsonSchema(): java.util.Map[String, AnyRef] =
+    deepToJava(impl.jsonSchema).asInstanceOf[java.util.Map[String, AnyRef]]
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   /**
@@ -304,6 +352,22 @@ class JvmContract[T](
    * Non-optional fields are passed through as-is (null values are kept so that
    * [[ContractImpl]] can detect null-for-required-field as `TypeMismatch`).
    */
+  /** Recursively convert a Scala Map/List structure to Java Map/List. */
+  private def deepToJava(value: Any): AnyRef = value match
+    case m: Map[?, ?] =>
+      val jm = new java.util.LinkedHashMap[String, AnyRef]()
+      m.asInstanceOf[Map[String, Any]].foreach { (k, v) => jm.put(k, deepToJava(v)) }
+      jm
+    case l: List[?] =>
+      val jl = new java.util.ArrayList[AnyRef]()
+      l.foreach { v => jl.add(deepToJava(v)) }
+      jl
+    case b: Boolean  => java.lang.Boolean.valueOf(b)
+    case i: Int      => java.lang.Integer.valueOf(i)
+    case l: Long     => java.lang.Long.valueOf(l)
+    case d: Double   => java.lang.Double.valueOf(d)
+    case other       => other.asInstanceOf[AnyRef]
+
   private def toScalaRaw(javaMap: java.util.Map[String, AnyRef]): RawObject =
     val optionalNames: Set[String] = fieldMetas.filter(_.isOptional).map(_.name).toSet
     val builder = Map.newBuilder[String, Any]
