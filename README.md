@@ -1457,18 +1457,84 @@ val combined: Either[ContractViolations, MetadataWithExtras] =
 <summary>Java</summary>
 
 ```java
+import io.dsentric.annotations.*;
+import io.dsentric.JvmContract;
+
 @contract(open = true)
 public record Metadata(
     @nonEmpty String key,
     @nonEmpty String value
 ) {}
 
-JvmContract<Metadata> metadataContract = JvmContract.of(
-    Metadata.class,
-    fields -> new Metadata((String) fields.get("key"), (String) fields.get("value")),
-    true    // isOpen = true
+JvmContract<Metadata> metadataContract = JvmContract.ofRecord(Metadata.class);
+
+Map<String, Object> raw = Map.of(
+    "key", "theme",
+    "value", "dark",
+    "source", "ui-settings"
 );
+
+ValidationResult<Metadata> result = metadataContract.validate(raw);
+// valid → result.getValue().get() is Metadata("theme", "dark")
+
+Map<String, Object> extra = metadataContract.extraFields(raw);
+// → {"source": "ui-settings"}
+
+record MetadataWithExtras(Metadata metadata, Map<String, Object> extras) {}
+
+Optional<MetadataWithExtras> combined =
+    result.getValue().map(metadata -> new MetadataWithExtras(
+        metadata,
+        metadataContract.extraFields(raw)
+    ));
 ```
+
+`JvmContract.ofRecord` reads `@contract(open = true)` and creates an open JVM contract automatically. Use the boolean overload only when you need to override the annotation.
+
+</details>
+
+<details>
+<summary>Kotlin</summary>
+
+```kotlin
+import io.dsentric.annotations.*
+import io.dsentric.JvmContract
+
+@contract(open = true)
+data class Metadata(
+    @field:nonEmpty val key: String,
+    @field:nonEmpty val value: String
+)
+
+val metadataContract: JvmContract<Metadata> = JvmContract.ofPrimary(Metadata::class.java)
+
+val raw = mapOf<String, Any>(
+    "key" to "theme",
+    "value" to "dark",
+    "source" to "ui-settings"
+)
+
+val result = metadataContract.validate(raw)
+// valid -> result.value.get() is Metadata("theme", "dark")
+
+val extra: Map<String, Any> = metadataContract.extraFields(raw)
+// -> mapOf("source" to "ui-settings")
+
+data class MetadataWithExtras(
+    val metadata: Metadata,
+    val extras: Map<String, Any>
+)
+
+val combined: MetadataWithExtras? =
+    result.value.map { metadata ->
+        MetadataWithExtras(
+            metadata = metadata,
+            extras = metadataContract.extraFields(raw)
+        )
+    }.orElse(null)
+```
+
+`JvmContract.ofPrimary` also reads `@contract(open = true)`, so unknown fields are accepted without passing `true` explicitly.
 
 </details>
 
@@ -1540,7 +1606,7 @@ For Java records (Java 16+) use `JvmContract.ofRecord` — the library discovers
 JvmContract<User> contract = JvmContract.ofRecord(User.class);
 
 // Open contract variant:
-JvmContract<Metadata> open = JvmContract.ofRecord(Metadata.class, true);
+JvmContract<Metadata> open = JvmContract.ofRecord(Metadata.class);
 ```
 
 For Kotlin data classes (and Java POJOs) use `JvmContract.ofPrimary` — it finds the primary non-synthetic constructor, skipping Kotlin's synthetic default-argument overloads:
@@ -1550,7 +1616,7 @@ For Kotlin data classes (and Java POJOs) use `JvmContract.ofPrimary` — it find
 val userContract: JvmContract<User> = JvmContract.ofPrimary(User::class.java)
 
 // Open variant:
-val metaContract: JvmContract<Metadata> = JvmContract.ofPrimary(Metadata::class.java, true)
+val metaContract: JvmContract<Metadata> = JvmContract.ofPrimary(Metadata::class.java)
 ```
 
 Both factories build the constructor function **once at startup** using reflection; there is no per-request overhead. They throw `IllegalArgumentException` with a clear message if the class does not meet the requirement (not a record for `ofRecord`; no non-synthetic constructor for `ofPrimary`).
@@ -1572,10 +1638,10 @@ JvmContract<User> contract = JvmContract.of(
 );
 
 // Open contract:
-JvmContract<Metadata> openContract = JvmContract.of(Metadata.class, constructFn, true);
+JvmContract<Metadata> openContract = JvmContract.of(Metadata.class, constructFn);
 ```
 
-The `fields` map passed to the lambda has already had all type coercions applied by the validation engine, and `Optional` fields are always present (as `Optional.of(value)` or `Optional.empty()`).
+The `fields` map passed to the lambda has already had all type coercions applied by the validation engine, and `Optional` fields are always present (as `Optional.of(value)` or `Optional.empty()`). The no-boolean overloads read openness from `@contract(open = true)`; the boolean overloads remain available when you need to override the annotation.
 
 ### ValidationResult[T]
 

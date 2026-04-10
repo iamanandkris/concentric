@@ -49,6 +49,8 @@ final class JvmContractSpec extends SpecBase:
       )
   )
 
+  val openDocContract: JvmContract[TestJvmOpenDoc] = JvmContract.ofRecord(classOf[TestJvmOpenDoc])
+
   // ── Helper ────────────────────────────────────────────────────────────────
 
   def jmap(pairs: (String, AnyRef)*): JMap[String, AnyRef] =
@@ -661,6 +663,115 @@ final class JvmContractSpec extends SpecBase:
         val json = JvmContract.ofRecord(classOf[TestJvmProfile]).toJson(profile)
         // bio and score are Optional.empty() → should not appear
         assertTrue(json.contains("\"username\""), !json.contains("\"bio\""), !json.contains("\"score\""))
+      }
+    ),
+
+    // ── jsonSchemaJson / jsonSchema ───────────────────────────────────────
+
+    suite("jsonSchemaJson and jsonSchema")(
+
+      test("jsonSchemaJson returns compact draft-07 schema JSON") {
+        val json = userContract.jsonSchemaJson()
+        assertTrue(
+          json.contains("\"$schema\":\"http://json-schema.org/draft-07/schema#\""),
+          json.contains("\"properties\""),
+          json.contains("\"name\""),
+          json.contains("\"additionalProperties\":false")
+        )
+      },
+
+      test("jsonSchemaJson with indent produces indented output") {
+        val json = userContract.jsonSchemaJson(2)
+        assertTrue(
+          json.contains("\n"),
+          json.contains("  \"$schema\""),
+          json.contains("  \"properties\"")
+        )
+      },
+
+      test("jsonSchema returns deeply converted Java collections") {
+        val schema = userContract.jsonSchema()
+        val props = schema.get("properties")
+        val required = schema.get("required")
+        val nameSchema =
+          props.asInstanceOf[java.util.Map[String, AnyRef]].get("name")
+
+        assertTrue(
+          schema.isInstanceOf[java.util.Map[?, ?]],
+          props.isInstanceOf[java.util.Map[?, ?]],
+          required.isInstanceOf[java.util.List[?]],
+          nameSchema.isInstanceOf[java.util.Map[?, ?]]
+        )
+      },
+
+      test("closed contract schema includes additionalProperties=false") {
+        val schema = userContract.jsonSchema()
+        assertTrue(schema.get("additionalProperties") == java.lang.Boolean.FALSE)
+      },
+
+      test("open contract schema omits additionalProperties") {
+        val schema = openDocContract.jsonSchema()
+        assertTrue(!schema.containsKey("additionalProperties"))
+      },
+
+      test("ofRecord infers openness from @contract(open = true)") {
+        val raw = jmap("key" -> "theme", "value" -> "dark", "source" -> "ui-settings")
+        val result = openDocContract.validate(raw)
+        assertTrue(result.isValid, result.getValue.get.key() == "theme")
+      },
+
+      test("explicit open=false overrides @contract(open = true)") {
+        val closedOverride = JvmContract.ofRecord(classOf[TestJvmOpenDoc], false)
+        val schema = closedOverride.jsonSchema()
+        assertTrue(schema.get("additionalProperties") == java.lang.Boolean.FALSE)
+      },
+
+      test("explicit open=true overrides @contract default false") {
+        val openOverride = JvmContract.ofRecord(classOf[TestJvmUser], true)
+        val schema = openOverride.jsonSchema()
+        assertTrue(!schema.containsKey("additionalProperties"))
+      }
+    ),
+
+    suite("extraFields")(
+
+      test("open contract returns only unknown top-level fields") {
+        val raw = jmap("key" -> "theme", "value" -> "dark", "source" -> "ui-settings")
+        val extra = openDocContract.extraFields(raw)
+        assertTrue(
+          extra.size == 1,
+          extra.get("source") == "ui-settings",
+          !extra.containsKey("key"),
+          !extra.containsKey("value")
+        )
+      },
+
+      test("closed contract returns unknown fields from the raw map helper") {
+        val raw = jmap(
+          "id" -> Long.box(1L),
+          "name" -> "Alice",
+          "age" -> Int.box(30),
+          "email" -> "alice@example.com",
+          "password" -> "pw",
+          "source" -> "ui-settings"
+        )
+        val extra = userContract.extraFields(raw)
+        assertTrue(extra.size == 1, extra.get("source") == "ui-settings")
+      },
+
+      test("extraFields returns nested Java collections") {
+        val nested = jmap("flag" -> java.lang.Boolean.TRUE)
+        val raw = jmap(
+          "key" -> "theme",
+          "value" -> "dark",
+          "meta" -> nested,
+          "tags" -> java.util.List.of("a", "b")
+        )
+        val extra = openDocContract.extraFields(raw)
+        assertTrue(
+          extra.get("meta").isInstanceOf[java.util.Map[?, ?]],
+          extra.get("tags").isInstanceOf[java.util.List[?]]
+        )
       }
     )
   )

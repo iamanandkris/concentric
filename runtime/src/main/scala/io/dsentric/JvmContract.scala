@@ -332,6 +332,16 @@ class JvmContract[T](
   def jsonSchema(): java.util.Map[String, AnyRef] =
     deepToJava(impl.jsonSchema).asInstanceOf[java.util.Map[String, AnyRef]]
 
+  /**
+   * Return the extra (unknown) fields present in a raw object that are not
+   * declared by this contract.
+   *
+   * This is primarily useful for open contracts. Nested maps and arrays are
+   * converted to Java collection types in the same way as [[jsonSchema()]].
+   */
+  def extraFields(raw: java.util.Map[String, AnyRef]): java.util.Map[String, AnyRef] =
+    deepToJava(impl.extraFields(toScalaRaw(raw))).asInstanceOf[java.util.Map[String, AnyRef]]
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   /**
@@ -392,22 +402,26 @@ class JvmContract[T](
 
 object JvmContract:
 
+  private def derivedOpen[T](clazz: Class[T]): Boolean =
+    Option(clazz.getAnnotation(classOf[io.dsentric.annotations.contract]))
+      .exists(_.open())
+
   /**
    * Create a [[JvmContract]] for a Java/Kotlin class.
    *
    * @param clazz       The class to derive the contract from (must be annotated
    *                    with `@contract` and have field-level or parameter-level
-   *                    dsentric annotations).
+   *                    dsentric annotations). The contract's openness is read
+   *                    from `@contract(open = ...)`.
    * @param constructFn A function that maps validated field values to `T`.
    */
   def of[T](
     clazz: Class[T],
     constructFn: java.util.function.Function[java.util.Map[String, AnyRef], T]
-  ): JvmContract[T] = new JvmContract(clazz, constructFn)
+  ): JvmContract[T] = new JvmContract(clazz, constructFn, derivedOpen(clazz))
 
   /**
-   * Overload that additionally accepts `open = true` for open contracts that
-   * allow unknown fields.
+   * Overload that explicitly overrides the openness declared on `@contract`.
    */
   def of[T](
     clazz: Class[T],
@@ -441,13 +455,15 @@ object JvmContract:
    * JvmContract<User> c = JvmContract.ofRecord(User.class);
    * }}}
    *
+   * The contract's openness is read from `@contract(open = ...)`.
+   *
    * @throws IllegalArgumentException if the class is not a record or runs on JVM < 16.
    */
   def ofRecord[T](clazz: Class[T]): JvmContract[T] =
-    new JvmContract(clazz, JvmContractDeriver.buildRecordConstructFn(clazz))
+    new JvmContract(clazz, JvmContractDeriver.buildRecordConstructFn(clazz), derivedOpen(clazz))
 
   /**
-   * Overload that additionally accepts `open = true` for open contracts.
+   * Overload that explicitly overrides the openness declared on `@contract`.
    */
   def ofRecord[T](clazz: Class[T], open: Boolean): JvmContract[T] =
     new JvmContract(clazz, JvmContractDeriver.buildRecordConstructFn(clazz), open)
@@ -477,16 +493,22 @@ object JvmContract:
    * val userContract = JvmContract.ofPrimary(User::class.java)
    * }}}
    *
+   * The contract's openness is read from `@contract(open = ...)`.
+   *
    * @throws IllegalArgumentException if no non-synthetic constructor is found.
    */
   def ofPrimary[T](clazz: Class[T]): JvmContract[T] =
     // derive once here to get field order; JvmContract ctor will derive again.
     // Both calls are at startup (not per-request) so the cost is negligible.
     val fieldOrder = JvmContractDeriver.derive(clazz).map(_.name)
-    new JvmContract(clazz, JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder))
+    new JvmContract(
+      clazz,
+      JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder),
+      derivedOpen(clazz)
+    )
 
   /**
-   * Overload that additionally accepts `open = true` for open contracts.
+   * Overload that explicitly overrides the openness declared on `@contract`.
    */
   def ofPrimary[T](clazz: Class[T], open: Boolean): JvmContract[T] =
     val fieldOrder = JvmContractDeriver.derive(clazz).map(_.name)
