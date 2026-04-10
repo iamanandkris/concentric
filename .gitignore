@@ -1,0 +1,48 @@
+# ── Build output ─────────────────────────────────────────────────────────────
+target/
+project/target/
+project/project/
+
+# ── sbt ───────────────────────────────────────────────────────────────────────
+.history
+.cache
+lib_managed/
+project/boot/
+
+# ── IntelliJ IDEA ────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+# ── Metals (VS Code / Vim LSP) ───────────────────────────────────────────────
+.metals/
+.bloop/
+metals.sbt
+project/.bloop/
+project/metals.sbt
+
+# ── BSP ───────────────────────────────────────────────────────────────────────
+.bsp/
+
+# ── Scala 3 / compiler artefacts ─────────────────────────────────────────────
+*.class
+*.tasty
+*.jar
+*.semanticdb
+
+# ── OS artefacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor swap / backup files ───────────────────────────────────────────────
+*~
+*.bak
+*.swp
+*.swo
+
+# ── Log files ─────────────────────────────────────────────────────────────────
+*.log
+logs/
