@@ -39,13 +39,18 @@ import scala.reflect.ClassTag
  */
 object JvmContractDeriver:
 
+  enum OptionalKind:
+    case Required, JavaOptional, Nullable
+
   private[dsentric] final case class DerivedField(
     name:        String,
     field:       Field,
     javaType:    java.lang.reflect.Type,
     annotations: List[Annotation],
-    isOptional:  Boolean,
+    optionalKind: OptionalKind,
+    hasDefault:  Boolean,
     isInclude:   Boolean,
+    nestedSupport: Option[JvmNestedSupport],
     children:    List[DerivedField] = Nil
   )
 
@@ -136,23 +141,33 @@ object JvmContractDeriver:
    * constructor.
    */
   private def primaryConstructorParams(clazz: Class[?]): List[Parameter] =
-    clazz.getDeclaredConstructors.toList
-      .sortBy(-_.getParameterCount)
-      .headOption
-      .fold(List.empty[Parameter]) { c =>
-        c.setAccessible(true)
-        c.getParameters.toList
+    KotlinSupport.info(clazz)
+      .map(_.javaParams)
+      .getOrElse {
+        clazz.getDeclaredConstructors.toList
+          .filterNot(_.isSynthetic)
+          .sortBy(-_.getParameterCount)
+          .headOption
+          .fold(List.empty[Parameter]) { c =>
+            c.setAccessible(true)
+            c.getParameters.toList
+          }
       }
 
   private def describeFields(clazz: Class[?], expandIncludes: Boolean): List[DerivedField] =
     val fields     = getFieldsInOrder(clazz)
     val ctorParams = primaryConstructorParams(clazz)
+    val kotlinParams = KotlinSupport.info(clazz)
+      .map(_.params.map(p => p.name -> p).toMap)
+      .getOrElse(Map.empty[String, KotlinSupport.ParamInfo])
 
     fields.zipWithIndex.map { (field, idx) =>
       val anns      = effectiveAnnotations(field, ctorParams.lift(idx))
       val jType     = field.getGenericType
-      val isOpt     = JvmTypeDecoder.isOptionalType(jType)
+      val kotlinParam = kotlinParams.get(field.getName)
+      val optKind   = optionalKindFor(field, jType, anns, kotlinParam)
       val canExpand = expandIncludes && has[include](anns)
+      val nested    = if canExpand then None else JvmNestedSupport.forType(jType)
       val children  =
         if canExpand then describeFields(field.getType, expandIncludes = false)
         else Nil
@@ -162,8 +177,10 @@ object JvmContractDeriver:
         field       = field,
         javaType    = jType,
         annotations = anns,
-        isOptional  = isOpt,
+        optionalKind = optKind,
+        hasDefault  = kotlinParam.exists(_.hasDefault),
         isInclude   = canExpand,
+        nestedSupport = nested,
         children    = children
       )
     }
@@ -196,11 +213,12 @@ object JvmContractDeriver:
     else
       val anns  = node.annotations
       val jType = node.javaType
+      val nestedDecoder = node.nestedSupport.map(_.decoder).getOrElse(JvmTypeDecoder.forType(jType))
       List(
         FieldMeta(
           name           = node.name,
-          isOptional     = node.isOptional,
-          hasDefault     = false,
+          isOptional     = node.optionalKind != OptionalKind.Required,
+          hasDefault     = node.hasDefault,
           isImmutable    = has[immutable](anns),
           isInternal     = has[internal](anns),
           isReserved     = has[reserved](anns),
@@ -219,12 +237,18 @@ object JvmContractDeriver:
           isPositive     = has[positive](anns),
           multipleOf     = get[multipleOf](anns).map(_.value()),
           extractPattern = get[extract](anns).map(_.value()),
-          decoder        = JvmTypeDecoder.forType(jType),
+          decoder        = nestedDecoder,
           validators     = get[validateWith](anns).toList
             .flatMap(_.value().toList)
             .map(vc => ValidatorHelper.make(vc.getName)),
+          nestedCollect  = node.nestedSupport.map(ns => (raw: Any, path: FieldPath) => ns.collect(raw, path)),
+          nestedPatchCollect = node.nestedSupport.map(ns =>
+            (current: Any, patch: Any, path: FieldPath) => ns.patchCollect(current, patch, path)
+          ),
+          nestedSanitize = node.nestedSupport.map(ns => (raw: Any) => ns.sanitize(raw)),
           schemaType     = schemaTypeFor(jType),
-          arrayItemType  = "any"
+          arrayItemType  = "any",
+          schemaFn       = node.nestedSupport.map(ns => () => ns.schema)
         )
       )
 
@@ -334,3 +358,25 @@ object JvmContractDeriver:
         else if raw == classOf[java.util.List[?]]     then "array"
         else "object"
       case _ => "any"
+
+  private def optionalKindFor(
+    field: Field,
+    jType: java.lang.reflect.Type,
+    anns: List[Annotation],
+    kotlinParam: Option[KotlinSupport.ParamInfo]
+  ): OptionalKind =
+    if JvmTypeDecoder.isOptionalType(jType) then OptionalKind.JavaOptional
+    else
+      val fieldClass = field.getType
+      if kotlinParam.exists(_.isNullable) || (!fieldClass.isPrimitive && hasNullableAnnotation(anns)) then OptionalKind.Nullable
+      else OptionalKind.Required
+
+  private def hasNullableAnnotation(anns: List[Annotation]): Boolean =
+    val names = Set(
+      "org.jetbrains.annotations.Nullable",
+      "javax.annotation.Nullable",
+      "jakarta.annotation.Nullable",
+      "androidx.annotation.Nullable",
+      "android.annotation.Nullable"
+    )
+    anns.exists(a => names.contains(a.annotationType().getName))

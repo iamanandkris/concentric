@@ -170,7 +170,7 @@ class JvmContract[T](
    */
   def sanitize(raw: java.util.Map[String, AnyRef]): java.util.Map[String, AnyRef] =
     impl.sanitize(toScalaRaw(raw))
-      .map { (k, v) => k -> v.asInstanceOf[AnyRef] }
+      .map { (k, v) => k -> deepToJava(v) }
       .asJava
 
   /**
@@ -191,7 +191,7 @@ class JvmContract[T](
    * fields are omitted.
    */
   def toRaw(t: T): java.util.Map[String, AnyRef] =
-    toRawFn(t).map { (k, v) => k -> v.asInstanceOf[AnyRef] }.asJava
+    toRawFn(t).map { (k, v) => k -> deepToJava(v) }.asJava
 
   /**
    * Serialize `t` to a compact JSON string.
@@ -294,6 +294,23 @@ class JvmContract[T](
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  private[dsentric] def collectViolations(raw: RawObject): List[Violation] =
+    impl.collectViolations(raw)
+
+  private[dsentric] def collectPatchViolations(current: RawObject, patch: RawObject): List[Violation] =
+    impl.validatePatch(current, patch) match
+      case Left(cvs) => cvs.violations.toList
+      case Right(_)  => Nil
+
+  private[dsentric] def validateRaw(raw: RawObject): Either[ContractViolations, T] =
+    impl.validate(raw)
+
+  private[dsentric] def sanitizeRaw(raw: RawObject): RawObject =
+    impl.sanitize(raw)
+
+  private[dsentric] def constructTrusted(raw: RawObject): T =
+    scalaConstructFn(raw)
+
   /**
    * Convert a Java raw map to the Scala [[RawObject]] expected by [[ContractImpl]].
    *
@@ -313,32 +330,15 @@ class JvmContract[T](
    * [[ContractImpl]] can detect null-for-required-field as `TypeMismatch`).
    */
   /** Recursively convert a Scala Map/List structure to Java Map/List. */
-  private def deepToJava(value: Any): AnyRef = value match
-    case m: Map[?, ?] =>
-      val jm = new java.util.LinkedHashMap[String, AnyRef]()
-      m.asInstanceOf[Map[String, Any]].foreach { (k, v) => jm.put(k, deepToJava(v)) }
-      jm
-    case l: List[?] =>
-      val jl = new java.util.ArrayList[AnyRef]()
-      l.foreach { v => jl.add(deepToJava(v)) }
-      jl
-    case b: Boolean  => java.lang.Boolean.valueOf(b)
-    case i: Int      => java.lang.Integer.valueOf(i)
-    case l: Long     => java.lang.Long.valueOf(l)
-    case d: Double   => java.lang.Double.valueOf(d)
-    case other       => other.asInstanceOf[AnyRef]
+  private def deepToJava(value: Any): AnyRef =
+    JvmValueConversions.deepToJava(value)
 
   private def toJavaValue(value: Any): AnyRef = value match
     case null                                      => null
-    case Some(inner)                               => inner.asInstanceOf[AnyRef]
+    case Some(inner)                               => deepToJava(inner)
     case None                                      => null
     case opt: java.util.Optional[?]                => opt.asInstanceOf[AnyRef]
-    case b: Boolean                                => java.lang.Boolean.valueOf(b)
-    case i: Int                                    => java.lang.Integer.valueOf(i)
-    case l: Long                                   => java.lang.Long.valueOf(l)
-    case d: Double                                 => java.lang.Double.valueOf(d)
-    case f: Float                                  => java.lang.Float.valueOf(f)
-    case other                                     => other.asInstanceOf[AnyRef]
+    case other                                     => deepToJava(other)
 
   private def toOptionalValue(valueOpt: Option[Any]): java.util.Optional[AnyRef] =
     valueOpt match
@@ -355,10 +355,14 @@ class JvmContract[T](
     nodes.foreach { node =>
       if node.isInclude then
         javaMap.put(node.name, constructIncludedValue(fields, node))
-      else if node.isOptional then
-        javaMap.put(node.name, toOptionalValue(fields.get(node.name)))
+      else if node.optionalKind == JvmContractDeriver.OptionalKind.JavaOptional then
+        val nestedValue = fields.get(node.name).map(v => node.nestedSupport.fold(v)(_.toJavaValue(v)))
+        javaMap.put(node.name, toOptionalValue(nestedValue))
       else
-        fields.get(node.name).foreach(v => javaMap.put(node.name, toJavaValue(v)))
+        fields.get(node.name).foreach { v =>
+          val javaValue = node.nestedSupport.fold(toJavaValue(v))(_.toJavaValue(v))
+          javaMap.put(node.name, javaValue)
+        }
     }
     javaMap
 
@@ -393,7 +397,8 @@ class JvmContract[T](
         case value if node.isInclude =>
           extractRawPairs(value, node.children)
         case value =>
-          List(node.name -> encodeFieldValue(node, value))
+          val encoded = node.nestedSupport.fold(encodeFieldValue(node, value))(_.toRawValue(value))
+          List(node.name -> encoded)
     }
 
   private def encodeFieldValue(
@@ -434,11 +439,11 @@ class JvmContract[T](
       if optionalNames.contains(k) then
         v match
           case opt: java.util.Optional[?] if opt.isEmpty => () // absent — omit key
-          case opt: java.util.Optional[?]                => builder += k -> opt.get()
+          case opt: java.util.Optional[?]                => builder += k -> JvmValueConversions.deepToScala(opt.get())
           case null                                      => () // null — treat as absent
-          case other                                     => builder += k -> other
+          case other                                     => builder += k -> JvmValueConversions.deepToScala(other)
       else
-        builder += k -> v
+        builder += k -> JvmValueConversions.deepToScala(v)
     }
     builder.result()
 
@@ -547,18 +552,22 @@ object JvmContract:
    * @throws IllegalArgumentException if no non-synthetic constructor is found.
    */
   def ofPrimary[T](clazz: Class[T]): JvmContract[T] =
-    // derive once here to get field order; JvmContract ctor will derive again.
-    // Both calls are at startup (not per-request) so the cost is negligible.
-    val fieldOrder = JvmContractDeriver.derive(clazz).map(_.name)
-    new JvmContract(
-      clazz,
-      JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder),
-      derivedOpen(clazz)
-    )
+    val constructFn = KotlinSupport.info(clazz)
+      .map(_.constructFn)
+      .getOrElse {
+        val fieldOrder = JvmContractDeriver.derive(clazz).map(_.name)
+        JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder)
+      }
+    new JvmContract(clazz, constructFn, derivedOpen(clazz))
 
   /**
    * Overload that explicitly overrides the openness declared on `@contract`.
    */
   def ofPrimary[T](clazz: Class[T], open: Boolean): JvmContract[T] =
-    val fieldOrder = JvmContractDeriver.derive(clazz).map(_.name)
-    new JvmContract(clazz, JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder), open)
+    val constructFn = KotlinSupport.info(clazz)
+      .map(_.constructFn)
+      .getOrElse {
+        val fieldOrder = JvmContractDeriver.derive(clazz).map(_.name)
+        JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder)
+      }
+    new JvmContract(clazz, constructFn, open)

@@ -1181,12 +1181,12 @@ profileContract.validate(Map.of("username", "alice", "score", Optional.of(-1)));
 @contract
 data class Profile(
     @field:nonEmpty         val username: String,
-                            val bio:      String? = null,
-    @field:min(0)           val score:    Int? = null
+                            val bio:      java.util.Optional<String> = java.util.Optional.empty(),
+    @field:min(0)           val score:    java.util.Optional<Int> = java.util.Optional.empty()
 )
 ```
 
-Kotlin nullable types (`String?`, `Int?`) map to `java.util.Optional` at the JVM level when combined with `JvmContract`. Annotate with `@field:` prefix.
+`JvmContract` treats `java.util.Optional<T>` as optional on the JVM path. For real Kotlin data classes derived through `JvmContract.ofPrimary`, the runtime now also uses Kotlin reflection to read constructor defaults and Kotlin nullability, so omitted `field: Type? = null` parameters are treated as optional. For plain JVM classes without Kotlin metadata, supported runtime `@Nullable` annotations (`org.jetbrains.annotations.Nullable`, `javax.annotation.Nullable`, `jakarta.annotation.Nullable`, and common Android variants) are also treated as optional. Plain nullable references without Kotlin metadata or a runtime nullable annotation are still treated as required.
 
 </details>
 
@@ -1860,7 +1860,7 @@ JvmContract<User> contract = JvmContract.ofRecord(User.class);
 JvmContract<Metadata> open = JvmContract.ofRecord(Metadata.class);
 ```
 
-For Kotlin data classes (and Java POJOs) use `JvmContract.ofPrimary` — it finds the primary non-synthetic constructor, skipping Kotlin's synthetic default-argument overloads:
+For Kotlin data classes (and Java POJOs) use `JvmContract.ofPrimary` — it finds the primary non-synthetic constructor, and for real Kotlin classes it also uses Kotlin reflection to honour the true primary constructor, parameter defaults, and nullability:
 
 ```kotlin
 // Kotlin — one line:
@@ -1870,7 +1870,9 @@ val userContract: JvmContract<User> = JvmContract.ofPrimary(User::class.java)
 val metaContract: JvmContract<Metadata> = JvmContract.ofPrimary(Metadata::class.java)
 ```
 
-Both factories build the constructor function **once at startup** using reflection; there is no per-request overhead. They throw `IllegalArgumentException` with a clear message if the class does not meet the requirement (not a record for `ofRecord`; no non-synthetic constructor for `ofPrimary`).
+Both factories build the constructor function **once at startup** using reflection; there is no per-request overhead. `ofPrimary` uses Kotlin reflection automatically when the target class carries Kotlin metadata. They throw `IllegalArgumentException` with a clear message if the class does not meet the requirement (not a record for `ofRecord`; no usable constructor for `ofPrimary`).
+
+Nested JVM contract types are also derived recursively for direct object fields, `Optional<nested>` fields, and `List<nested>` fields. A nested Java record / Kotlin data-class-style model can therefore be declared directly in the parent model without falling back to raw Scala maps, and nested `@reserved`, `@internal`, `@masked`, `@immutable`, and `@validateContract` rules are enforced through `validate`, `validatePatch`, `sanitize`, and `jsonSchema`.
 
 #### Manual constructor (escape hatch)
 
@@ -1892,7 +1894,13 @@ JvmContract<User> contract = JvmContract.of(
 JvmContract<Metadata> openContract = JvmContract.of(Metadata.class, constructFn);
 ```
 
-The `fields` map passed to the lambda has already had all type coercions applied by the validation engine, and `Optional` fields are always present (as `Optional.of(value)` or `Optional.empty()`). The no-boolean overloads read openness from `@contract(open = true)`; the boolean overloads remain available when you need to override the annotation.
+The `fields` map passed to the lambda has already had all type coercions applied by the validation engine. `Optional` fields are always present (as `Optional.of(value)` or `Optional.empty()`), nested contract-backed fields arrive as typed nested JVM instances, nested `List` fields can be materialized as typed JVM elements, and map/list values are exposed as Java collections rather than Scala collections. The no-boolean overloads read openness from `@contract(open = true)`; the boolean overloads remain available when you need to override the annotation.
+
+Current JVM limitations:
+
+- Optionality is inferred from `java.util.Optional<T>`, real Kotlin metadata, or a supported runtime `@Nullable` annotation. Plain Java references and non-Kotlin classes without such metadata are still treated as required.
+- Recursive JVM derivation now covers direct nested contract objects, `Optional<nested>`, and `List<nested>`. `Map<String, nested>` and broader generic container support are not yet automatic.
+- The dedicated real-Kotlin interop test module in [kotlin-it](/Users/anand.krishnan/example/dsentric-zio/kotlin-it) now compiles on Java 25 in this repo. That requires a Kotlin compiler/runtime new enough to understand Java 25 class-library metadata; this build uses Kotlin `2.3.0`.
 
 ### ValidationResult[T]
 

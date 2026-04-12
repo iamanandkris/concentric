@@ -27,8 +27,7 @@ object JvmTypeDecoder:
         if raw == classOf[java.util.Optional[?]] then
           val innerDecoder = forType(pt.getActualTypeArguments()(0))
           optionalDecoder(innerDecoder)
-        else
-          passThrough
+        else JvmNestedSupport.forType(pt).map(_.decoder).getOrElse(passThrough)
       case _ => passThrough
 
   /**
@@ -55,7 +54,7 @@ object JvmTypeDecoder:
          || c == java.lang.Float.TYPE       then floatDecoder
     else if c == classOf[java.lang.Boolean]
          || c == java.lang.Boolean.TYPE     then boolDecoder
-    else passThrough
+    else JvmNestedSupport.forClass(c).map(_.decoder).getOrElse(passThrough)
 
   private val stringDecoder: Any => Option[Any] = {
     case s: String => Some(s)

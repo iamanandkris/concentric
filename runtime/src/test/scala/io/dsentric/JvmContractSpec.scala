@@ -55,6 +55,15 @@ final class JvmContractSpec extends SpecBase:
   val bookingRuleContract: JvmContract[TestJvmBooking] = JvmContract.ofRecord(classOf[TestJvmBooking])
   val eventContract: JvmContract[TestJvmEvent] = JvmContract.ofRecord(classOf[TestJvmEvent])
   val memberContract: JvmContract[TestJvmMember] = JvmContract.ofRecord(classOf[TestJvmMember])
+  val productContract: JvmContract[TestJvmProduct] = JvmContract.ofRecord(classOf[TestJvmProduct])
+  val optionalProductContract: JvmContract[TestJvmOptionalProduct] = JvmContract.ofRecord(classOf[TestJvmOptionalProduct])
+  val orderContract: JvmContract[TestJvmOrder] = JvmContract.ofRecord(classOf[TestJvmOrder])
+  val javaProductPayloadContract: JvmContract[TestJvmJavaProductPayload] = JvmContract.ofRecord(classOf[TestJvmJavaProductPayload])
+  val javaUserPayloadContract: JvmContract[TestJvmJavaUserPayload] = JvmContract.ofRecord(classOf[TestJvmJavaUserPayload])
+  val javaOrderPayloadContract: JvmContract[TestJvmJavaOrderPayload] = JvmContract.ofRecord(classOf[TestJvmJavaOrderPayload])
+  val nullableProfileContract: JvmContract[TestJvmNullableProfile] = JvmContract.ofRecord(classOf[TestJvmNullableProfile])
+  val kotlinOptionalUserContract: JvmContract[TestKotlinOptionalUserPayload] = JvmContract.ofPrimary(classOf[TestKotlinOptionalUserPayload])
+  val kotlinOptionalOrderContract: JvmContract[TestKotlinOptionalOrderPayload] = JvmContract.ofPrimary(classOf[TestKotlinOptionalOrderPayload])
 
   // ── Helper ────────────────────────────────────────────────────────────────
 
@@ -557,9 +566,226 @@ final class JvmContractSpec extends SpecBase:
       }
     ),
 
+    suite("nested JVM derivation")( 
+
+      test("ofRecord decodes a nested Java record from a Scala map value") {
+        val raw = jmap(
+          "sku" -> "SKU-1",
+          "inventory" -> Map(
+            "warehouseId" -> "WH-1",
+            "available" -> 8,
+            "reserved" -> 3
+          )
+        )
+        val result = productContract.validate(raw)
+        assertTrue(
+          result.isValid,
+          result.getValue.get.inventory().isInstanceOf[TestJvmInventory],
+          result.getValue.get.inventory().warehouseId() == "WH-1",
+          result.getValue.get.inventory().available() == 8,
+          result.getValue.get.inventory().reserved() == 3
+        )
+      },
+
+      test("nested Optional record is Optional.empty when omitted") {
+        val result = optionalProductContract.validate(jmap("sku" -> "SKU-2"))
+        assertTrue(
+          result.isValid,
+          result.getValue.get.inventory() == java.util.Optional.empty[TestJvmInventory]()
+        )
+      },
+
+      test("nested @validateContract violations are reported with the nested path") {
+        val raw = jmap(
+          "sku" -> "SKU-3",
+          "inventory" -> Map(
+            "warehouseId" -> "WH-2",
+            "available" -> 2,
+            "reserved" -> 5
+          )
+        )
+        val result = productContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "inventory" &&
+            v.code == "CONSTRAINT(validateContract)"
+          )
+        )
+      },
+
+      test("nested @reserved fields are rejected on validate") {
+        val raw = jmap(
+          "orderNumber" -> "ORD-1",
+          "paymentInfo" -> Map(
+            "cardNumber" -> "4111111111111111",
+            "gatewayToken" -> "tok_123",
+            "internalSegment" -> "vip"
+          )
+        )
+        val result = orderContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "paymentInfo.internalSegment" && v.code == "RESERVED"
+          )
+        )
+      },
+
+      test("nested sanitize applies @internal and @masked recursively") {
+        val sanitized = orderContract.sanitize(jmap(
+          "orderNumber" -> "ORD-2",
+          "paymentInfo" -> Map(
+            "cardNumber" -> "4111111111111111",
+            "gatewayToken" -> "tok_456"
+          )
+        ))
+        val paymentInfo = sanitized.get("paymentInfo").asInstanceOf[java.util.Map[String, AnyRef]]
+        assertTrue(
+          paymentInfo.get("cardNumber") == "***",
+          !paymentInfo.containsKey("gatewayToken")
+        )
+      },
+
+      test("nested validatePatch trusts current reserved fields and still applies nested validators") {
+        val current = jmap(
+          "orderNumber" -> "ORD-3",
+          "paymentInfo" -> Map(
+            "cardNumber" -> "4111111111111111",
+            "gatewayToken" -> "tok_789",
+            "internalSegment" -> "system"
+          )
+        )
+        val patch = jmap(
+          "paymentInfo" -> Map(
+            "cardNumber" -> "5555555555554444"
+          )
+        )
+        val result = orderContract.validatePatch(current, patch)
+        assertTrue(
+          result.isValid,
+          result.getValue.get.paymentInfo().cardNumber() == "5555555555554444",
+          result.getValue.get.paymentInfo().internalSegment() == "system"
+        )
+      },
+
+      test("nested validatePatch rejects nested immutable updates") {
+        val current = jmap(
+          "sku" -> "SKU-4",
+          "inventory" -> Map(
+            "warehouseId" -> "WH-9",
+            "available" -> 4,
+            "reserved" -> 1
+          )
+        )
+        val patch = jmap(
+          "inventory" -> Map(
+            "warehouseId" -> "WH-10"
+          )
+        )
+        val result = productContract.validatePatch(current, patch)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "inventory.warehouseId" && v.code == "IMMUTABLE"
+          )
+        )
+      },
+
+      test("java-record payload decodes nested records and java lists") {
+        val raw = jmap(
+          "sku" -> "JAVA-001",
+          "name" -> "Java Product",
+          "description" -> "Nested decode check",
+          "category" -> "test",
+          "price" -> Map("amount" -> 19.99d, "currency" -> "USD"),
+          "inventory" -> Map("available" -> 10, "reserved" -> 2),
+          "tags" -> java.util.List.of("java", "nested")
+        )
+        val result = javaProductPayloadContract.validate(raw)
+        assertTrue(
+          result.isValid,
+          result.getValue.get.price().amount() == 19.99d,
+          result.getValue.get.inventory().available() == 10,
+          result.getValue.get.tags() == java.util.List.of("java", "nested")
+        )
+      },
+
+      test("java-record payload rejects nested reserved fields") {
+        val raw = jmap(
+          "email" -> "reserved@example.com",
+          "name" -> "Reserved User",
+          "preferences" -> Map("internalSegment" -> "secret")
+        )
+        val result = javaUserPayloadContract.validate(raw)
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v =>
+            v.path == "preferences.internalSegment" && v.code == "RESERVED"
+          )
+        )
+      },
+
+      test("java-record payload sanitizes nested masked and internal fields") {
+        val sanitized = javaOrderPayloadContract.sanitize(jmap(
+          "userId" -> Long.box(1L),
+          "orderNumber" -> "ORD-JAVA-001",
+          "status" -> "pending",
+          "items" -> java.util.List.of(Map("productId" -> 1L, "sku" -> "SKU-1", "quantity" -> 2, "unitPrice" -> 10.0d)),
+          "totals" -> Map("subtotal" -> 20.0d, "tax" -> 2.0d, "shipping" -> 1.0d, "total" -> 23.0d),
+          "paymentInfo" -> Map("method" -> "credit_card", "last4" -> "1234", "gatewayReference" -> "gw-123")
+        ))
+        val paymentInfo = sanitized.get("paymentInfo").asInstanceOf[java.util.Map[String, AnyRef]]
+        assertTrue(
+          paymentInfo.get("last4") == "****",
+          !paymentInfo.containsKey("gatewayReference")
+        )
+      },
+
+      test("list of nested JVM contracts is materialized as typed elements") {
+        val raw = jmap(
+          "userId" -> Long.box(1L),
+          "orderNumber" -> "ORD-JAVA-002",
+          "status" -> "pending",
+          "items" -> java.util.List.of(Map("productId" -> 1L, "sku" -> "SKU-1", "quantity" -> 2, "unitPrice" -> 10.0d)),
+          "totals" -> Map("subtotal" -> 20.0d, "tax" -> 2.0d, "shipping" -> 1.0d, "total" -> 23.0d),
+          "paymentInfo" -> Map("method" -> "credit_card", "last4" -> "1234")
+        )
+        val result = javaOrderPayloadContract.validate(raw)
+        val first = result.getValue.get.items().get(0)
+        assertTrue(
+          result.isValid,
+          first.isInstanceOf[TestJvmJavaOrderItem],
+          first.productId() == 1L,
+          first.quantity() == 2
+        )
+      },
+
+      test("nullable reference fields can be omitted when marked @Nullable") {
+        val result = nullableProfileContract.validate(jmap("username" -> "alice"))
+        assertTrue(
+          result.isValid,
+          result.getValue.get.bio() == null,
+          result.getValue.get.favoritePrice() == null
+        )
+      },
+
+      test("nullable nested contract fields decode when provided") {
+        val result = nullableProfileContract.validate(jmap(
+          "username" -> "alice",
+          "favoritePrice" -> Map("amount" -> 19.99d, "currency" -> "USD")
+        ))
+        assertTrue(
+          result.isValid,
+          result.getValue.get.favoritePrice().amount() == 19.99d,
+          result.getValue.get.favoritePrice().currency() == "USD"
+        )
+      }
+    ),
+
     // ── ofRecord — zero-boilerplate auto-constructor ──────────────────────
 
-    suite("ofRecord — auto-constructor for Java records")(
+    suite("ofRecord — auto-constructor for Java records")( 
 
       test("produces the same validated T as the explicit JvmContract.of version") {
         val autoContract = JvmContract.ofRecord(classOf[TestJvmUser])
@@ -700,6 +926,80 @@ final class JvmContractSpec extends SpecBase:
         val patch   = jmap("name" -> "Alicia")
         val result  = autoContract.validatePatch(current, patch)
         assertTrue(result.isValid, result.getValue.get.name() == "Alicia")
+      },
+
+      test("constructs nested Kotlin-style classes from nested raw maps") {
+        val autoContract = JvmContract.ofPrimary(classOf[TestKotlinNestedUser])
+        val raw = jmap(
+          "id" -> Long.box(11L),
+          "name" -> "Casey",
+          "address" -> Map(
+            "city" -> "London",
+            "postcode" -> "E1 6AN"
+          )
+        )
+        val result = autoContract.validate(raw)
+        assertTrue(
+          result.isValid,
+          result.getValue.get.address().isInstanceOf[TestKotlinNestedAddress],
+          result.getValue.get.address().city() == "London",
+          result.getValue.get.address().postcode() == "E1 6AN"
+        )
+      },
+
+      test("kotlin-style optional nested fields can be omitted") {
+        val result = kotlinOptionalUserContract.validate(jmap(
+          "email" -> "optional@example.com",
+          "name" -> "Optional Kotlin User"
+        ))
+        assertTrue(
+          result.isValid,
+          result.getValue.get.address() == null,
+          result.getValue.get.preferences() == null,
+          result.getValue.get.internalNotes() == java.util.Optional.empty[String]()
+        )
+      },
+
+      test("kotlin-style nested data classes decode when provided") {
+        val result = kotlinOptionalUserContract.validate(jmap(
+          "email" -> "kotlin@example.com",
+          "name" -> "Kotlin User",
+          "address" -> Map("street" -> "1 Kotlin St", "city" -> "Leeds", "zipCode" -> "LS11AA"),
+          "preferences" -> Map("newsletter" -> java.lang.Boolean.TRUE)
+        ))
+        assertTrue(
+          result.isValid,
+          result.getValue.get.address().street() == "1 Kotlin St",
+          result.getValue.get.preferences().newsletter() == java.lang.Boolean.TRUE
+        )
+      },
+
+      test("kotlin-style nested reserved field is rejected") {
+        val result = kotlinOptionalUserContract.validate(jmap(
+          "email" -> "reserved@example.com",
+          "name" -> "Reserved Kotlin User",
+          "preferences" -> Map("internalSegment" -> "secret")
+        ))
+        assertTrue(
+          !result.isValid,
+          result.getErrors.asScala.exists(v => v.path.contains("internalSegment"))
+        )
+      },
+
+      test("kotlin-style sanitize masks and drops nested sensitive fields") {
+        val sanitized = kotlinOptionalOrderContract.sanitize(jmap(
+          "userId" -> Long.box(1L),
+          "orderNumber" -> "ORD-KOTLIN-001",
+          "status" -> "pending",
+          "items" -> java.util.List.of(Map("productId" -> 1L, "sku" -> "SKU-1", "quantity" -> 2, "unitPrice" -> 10.0d)),
+          "totals" -> Map("subtotal" -> 20.0d, "tax" -> 2.0d, "shipping" -> 1.0d, "total" -> 23.0d),
+          "paymentInfo" -> Map("method" -> "credit_card", "last4" -> "1234", "gatewayReference" -> "gw-123")
+        ))
+        val paymentInfo = sanitized.get("paymentInfo").asInstanceOf[java.util.Map[String, AnyRef]]
+        assertTrue(
+          paymentInfo.get("last4") == "****",
+          !paymentInfo.containsKey("gatewayReference")
+        )
       }
     ),
 
@@ -900,7 +1200,7 @@ final class JvmContractSpec extends SpecBase:
       }
     ),
 
-    suite("JVM feature parity gaps")(
+    suite("JVM feature parity gaps")( 
 
       test("@validateWith is enforced on JvmContract") {
         val raw = jmap("phone" -> "not-a-phone", "name" -> "Alice")

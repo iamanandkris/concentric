@@ -1,7 +1,10 @@
 import sbt.Keys._
+import kotlin.KotlinPlugin
+import kotlin.Keys._
 
 val scala3Version    = "3.4.2"
 val scalaTestVersion = "3.2.18"
+val kotlinJvmVersion = "2.3.0"
 
 lazy val commonSettings = Seq(
   organization  := "io.dsentric",
@@ -85,13 +88,35 @@ lazy val runtime = project
         NothingFilter
     },
     libraryDependencies ++= Seq(
-      "org.scalatest" %% "scalatest" % scalaTestVersion % Test
+      "org.jetbrains.kotlin" % "kotlin-reflect" % kotlinJvmVersion,
+      "org.scalatest" %% "scalatest" % scalaTestVersion % Test,
+      "org.jetbrains" % "annotations" % "24.1.0" % Test
     )
   )
   .dependsOn(core)
 
+lazy val kotlinInterop = project
+  .in(file("kotlin-it"))
+  .enablePlugins(KotlinPlugin)
+  .settings(moduleName := "dsentric-kotlin-it")
+  .settings(commonSettings)
+  .settings(
+    kotlinVersion := kotlinJvmVersion,
+    kotlincJvmTarget := "17",
+    libraryDependencies ++= Seq(
+      "junit" % "junit" % "4.13.2" % Test,
+      "com.github.sbt" % "junit-interface" % "0.13.3" % Test,
+      "org.jetbrains" % "annotations" % "24.1.0" % Test
+    )
+  )
+  .settings(
+    kotlinLib("stdlib"),
+    kotlinLib("stdlib-jdk8")
+  )
+  .dependsOn(runtime)
+
 lazy val root = (project in file("."))
-  .aggregate(annotations, core, runtime)
+  .aggregate(annotations, core, runtime, kotlinInterop)
   .settings(
     name := "dsentric",
     publish / skip := true

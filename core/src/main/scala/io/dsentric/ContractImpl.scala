@@ -286,7 +286,12 @@ final class ContractImpl[T](
                   s"'${meta.name}' has an incorrect type")
               case Some(decoded) =>
                 val constraintViolations = meta.validateConstraints(decoded, path)
-                val nestedViolations     = meta.nestedCollect.toList.flatMap(_.apply(effectiveValue, path))
+                val nestedViolations     =
+                  meta.nestedPatchCollect
+                    .map(_.apply(currentRaw.getOrElse(meta.name, null), rawPatchValue, path))
+                    .orElse(meta.nestedCollect.map(_.apply(effectiveValue, path)))
+                    .toList
+                    .flatten
                 val allViolations        = constraintViolations ++ nestedViolations
                 if allViolations.isEmpty then validatedFields(meta.name) = decoded
                 else violations ++= allViolations

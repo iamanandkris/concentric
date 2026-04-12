@@ -70,6 +70,7 @@ final case class FieldMeta(
   decoder:        Any => Option[Any],
   validators:     List[Any => List[String]]                      = Nil,
   nestedCollect:  Option[(Any, FieldPath) => List[Violation]]    = None,
+  nestedPatchCollect: Option[(Any, Any, FieldPath) => List[Violation]] = None,
   nestedSanitize: Option[Any => Any]                             = None,
   /**
    * JSON Schema type hint for this field.
