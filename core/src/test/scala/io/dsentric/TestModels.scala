@@ -12,14 +12,14 @@ case class User(
                                 email:    Option[String],
   @min(0)    @max(150)          age:      Int = 0,
   @masked                       password: Option[String]
-)
+) derives Contract
 
 /** A contract that allows additional properties. */
 @contract(open = true)
 case class OpenDoc(
   @nonEmpty title: String,
               body:  Option[String]
-)
+) derives Contract
 
 // ── Nested address / profile ──────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ case class OpenDoc(
 case class Address(
   @nonEmpty street: String,
   @nonEmpty city:   String
-)
+) derives Contract
 
 given RawDecoder[Address] with
   def decode(raw: Any): Option[Address] = raw match
@@ -44,7 +44,7 @@ case class Profile(
   @immutable               userId:  Long,
   @nonEmpty @maxLength(50) handle:  String,
                            address: Option[Address]
-)
+) derives Contract
 
 // ── Nested collection ─────────────────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ case class Profile(
 case class OrderItem(
   @nonEmpty         name: String,
   @min(1)           qty:  Int
-)
+) derives Contract
 
 given RawDecoder[OrderItem] with
   def decode(raw: Any): Option[OrderItem] = raw match
@@ -68,7 +68,7 @@ given RawDecoder[OrderItem] with
 case class Order(
   @nonEmpty                  id:    String,
   @nonEmpty                  items: List[OrderItem]
-)
+) derives Contract
 
 given RawDecoder[Order] with
   def decode(raw: Any): Option[Order] = raw match
@@ -86,7 +86,7 @@ given RawDecoder[Order] with
 case class EitherHolder(
   @nonEmpty label: String,
              value: Either[String, Int]
-)
+) derives Contract
 
 // ── Constraint-heavy models ───────────────────────────────────────────────────
 
@@ -95,25 +95,25 @@ case class Ticket(
   @reserved                           trackingId: String = "PENDING",
   @nonEmpty                           title:      String,
                                       notes:      Option[String]
-)
+) derives Contract
 
 // Product is defined in ConstraintSpec.scala — it uses @validateWith which
 // causes a Scala 3.4.2 compiler cycle when paired with a top-level
-// given Contract[T] in a different initialization context.
+// derived contract alias in a different initialization context.
 
 @contract
 case class ApiKey(
   @nonEmpty @minLength(8)      key:     String,
   @masked("REDACTED")          secret:  String,
                                label:   Option[String]
-)
+) derives Contract
 
 @contract
 case class Prefs(
   language: Option[String],
   timezone: Option[String],
   theme:    Option[String]
-)
+) derives Contract
 
 // ── @discriminator models ─────────────────────────────────────────────────────
 
@@ -121,13 +121,13 @@ case class Prefs(
 case class Cat(
   @nonEmpty name: String,
              indoor: Boolean = true
-)
+) derives Contract
 
 @contract
 case class Dog(
   @nonEmpty name:  String,
   @min(1)   age:   Int
-)
+) derives Contract
 
 given RawDecoder[Cat] with
   def decode(raw: Any): Option[Cat] = raw match
@@ -152,7 +152,7 @@ case class PetHolder(
   @nonEmpty                                                        ownerId: String,
   @discriminator("kind", left = "cat", right = "dog")
   pet:     Either[Cat, Dog]
-)
+) derives Contract
 
 // ── @include models ───────────────────────────────────────────────────────────
 
@@ -160,14 +160,14 @@ case class PetHolder(
 case class Timestamps(
   @immutable createdAt: Long,
              updatedAt: Long = 0L
-)
+) derives Contract
 
 @contract
 case class Document(
   @nonEmpty             title:      String,
                         body:       Option[String],
   @include              timestamps: Timestamps
-)
+) derives Contract
 
 given RawDecoder[Timestamps] with
   def decode(raw: Any): Option[Timestamps] = raw match
@@ -181,13 +181,13 @@ given RawDecoder[Timestamps] with
 case class AuditStamp(
   @include              timestamps: Timestamps,
                         createdBy:  String
-)
+) derives Contract
 
 @contract
 case class DeepDocument(
   @nonEmpty             title: String,
   @include              audit: AuditStamp
-)
+) derives Contract
 
 // ── @decodable wrapper types ──────────────────────────────────────────────────
 
@@ -209,7 +209,7 @@ case class Member(
   @nonEmpty           handle:  String,
   @email              contact: EmailAddr,
                       score:   Score = Score(0)
-)
+) derives Contract
 
 // ── @extract models ───────────────────────────────────────────────────────────
 
@@ -236,7 +236,7 @@ case class Booking(
                                                 event:     IsoDate,
                                                 host:      Option[NamedEmail],
                                                 code:      Option[ProductCode]
-)
+) derives Contract
 
 // ── @validateContract models ──────────────────────────────────────────────────
 
@@ -260,7 +260,7 @@ case class Stay(
   @min(1)                 checkOut:   Int,
   @min(1)                 minGuests:  Int,
   @min(1)                 maxGuests:  Int
-)
+) derives Contract
 
 // ── Either sanitization models ────────────────────────────────────────────────
 // These have @internal / @masked fields on the branch types so we can verify
@@ -271,14 +271,14 @@ case class CardPayment(
   @masked          cardNumber: String,   // should be masked in sanitize output
   @internal        cvv:        String,   // should be stripped in sanitize output
                    amount:     Double
-)
+) derives Contract
 
 @contract
 case class BankPayment(
   @nonEmpty        accountRef: String,
   @internal        sortCode:   String,   // should be stripped in sanitize output
                    amount:     Double
-)
+) derives Contract
 
 given RawDecoder[CardPayment] with
   def decode(raw: Any): Option[CardPayment] = raw match
@@ -307,7 +307,7 @@ case class Invoice(
   @nonEmpty        invoiceId: String,
   //@discriminator("paymentType", left = "Card", right = "Bank")
                    payment:   Either[CardPayment, BankPayment]
-)
+) derives Contract
 
 given RawDecoder[Invoice] with
   def decode(raw: Any): Option[Invoice] = raw match
@@ -325,32 +325,32 @@ given RawDecoder[Invoice] with
 case class WebLink(
   @url                        href:    String,
   @nonEmpty                   label:   Option[String]
-)
+) derives Contract
 
 @contract
 case class Resource(
   @uuid                       id:      String,
   @nonEmpty                   name:    String
-)
+) derives Contract
 
 @contract
 case class ScheduledEvent(
   @nonEmpty                   title:   String,
   @future                     startsAt: Long,
   @past                       createdAt: Long
-)
+) derives Contract
 
 @contract
 case class Measurement(
   @positive                   value:   Double,
   @positive                   count:   Int
-)
+) derives Contract
 
 @contract
 case class Payment(
   @positive @multipleOf(0.01) amount:  Double,
   @multipleOf(5)              quantity: Int
-)
+) derives Contract
 
 // ── List[T] sanitization model ───────────────────────────────────────────────
 // Verifies that sanitize() recurses into List[T] fields and strips @internal /
@@ -361,7 +361,7 @@ case class LineItem(
   @nonEmpty   productId: String,
   @internal   costPrice: Double,   // supplier cost — stripped in sanitize
               quantity:  Int
-)
+) derives Contract
 
 given RawDecoder[LineItem] with
   def decode(raw: Any): Option[LineItem] = raw match
@@ -378,8 +378,4 @@ given RawDecoder[LineItem] with
 case class Cart(
   @nonEmpty   cartId: String,
               items:  List[LineItem]
-)
-
-// Contract instances are in TestContracts.scala to avoid Scala 3 top-level
-// initialization cycles between Contract.derived macro expansion and the
-// given Contract[X] values being defined in the same compilation unit.
+) derives Contract

@@ -10,8 +10,7 @@ final class JsonSchemaSpec extends SpecBase:
     @email                                               contactEmail: Option[String],
     @pattern("^[A-Z]{2}-\\d+$")                          code:         Option[String],
     @validateWith(Array(classOf[io.dsentric.validators.NoWhitespaceValidator])) slug:         String
-  )
-  given productSchemaContract: Contract[ProductSchemaSample] = Contract.derived[ProductSchemaSample]
+  ) derives Contract
 
   def spec: Unit = suite("JsonSchemaSpec")(
 
@@ -107,14 +106,14 @@ final class JsonSchemaSpec extends SpecBase:
       },
 
       test("@email → format=email") {
-        val props = productSchemaContract.jsonSchema("properties").asInstanceOf[Map[String, Any]]
+        val props = summon[Contract[ProductSchemaSample]].jsonSchema("properties").asInstanceOf[Map[String, Any]]
         assertTrue(
           props("contactEmail").asInstanceOf[Map[String, Any]]("format") == "email"
         )
       },
 
       test("@pattern → pattern key in property schema") {
-        val props = productSchemaContract.jsonSchema("properties").asInstanceOf[Map[String, Any]]
+        val props = summon[Contract[ProductSchemaSample]].jsonSchema("properties").asInstanceOf[Map[String, Any]]
         assertTrue(
           props("code").asInstanceOf[Map[String, Any]]("pattern") == "^[A-Z]{2}-\\d+$"
         )

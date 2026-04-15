@@ -1,40 +1,36 @@
 package io.dsentric
 
 /**
- * All `Contract.derived` instances for test models.
+ * Convenient aliases for summoned contract instances used throughout tests.
  *
- * Kept in a separate file from TestModels.scala so that the Scala 3 compiler
- * does not encounter a top-level initialization cycle between the
- * `Contract.derived[X]` macro expansion and the `given Contract[X]` value
- * being defined in the same compilation unit.
+ * The contracts themselves are now derived directly on the model case classes
+ * via `derives Contract`; these vals only preserve the long-standing test API.
  */
-
-given addressContract:    Contract[Address]     = Contract.derived[Address]
-given memberContract:     Contract[Member]      = Contract.derived[Member]
-given userContract:       Contract[User]        = Contract.derived[User]
-given openDocContract:    Contract[OpenDoc]     = Contract.derived[OpenDoc]
-given profileContract:    Contract[Profile]     = Contract.derived[Profile]
-given ticketContract:     Contract[Ticket]      = Contract.derived[Ticket]
-// productContract lives in ConstraintSpec.scala alongside the Product model.
-given orderContract:      Contract[Order]       = Contract.derived[Order]
-given orderItemContract:  Contract[OrderItem]   = Contract.derived[OrderItem]
-given eitherContract:     Contract[EitherHolder]= Contract.derived[EitherHolder]
-given apiKeyContract:     Contract[ApiKey]      = Contract.derived[ApiKey]
-given prefsContract:      Contract[Prefs]       = Contract.derived[Prefs]
-given catContract:        Contract[Cat]         = Contract.derived[Cat]
-given dogContract:        Contract[Dog]         = Contract.derived[Dog]
-given petHolderContract:  Contract[PetHolder]   = Contract.derived[PetHolder]
-given timestampsContract: Contract[Timestamps]  = Contract.derived[Timestamps]
-given documentContract:   Contract[Document]    = Contract.derived[Document]
-given bookingContract:      Contract[Booking]        = Contract.derived[Booking]
-given stayContract:         Contract[Stay]           = Contract.derived[Stay]
-given cardPaymentContract:  Contract[CardPayment]    = Contract.derived[CardPayment]
-given bankPaymentContract:  Contract[BankPayment]    = Contract.derived[BankPayment]
-given invoiceContract:      Contract[Invoice]        = Contract.derived[Invoice]
-given webLinkContract:      Contract[WebLink]        = Contract.derived[WebLink]
-given resourceContract:     Contract[Resource]       = Contract.derived[Resource]
-given scheduledEventContract: Contract[ScheduledEvent] = Contract.derived[ScheduledEvent]
-given measurementContract:  Contract[Measurement]    = Contract.derived[Measurement]
-given paymentContract:      Contract[Payment]        = Contract.derived[Payment]
-given lineItemContract:     Contract[LineItem]       = Contract.derived[LineItem]
-given cartContract:         Contract[Cart]           = Contract.derived[Cart]
+val addressContract:    Contract[Address]        = summon[Contract[Address]]
+val memberContract:     Contract[Member]         = summon[Contract[Member]]
+val userContract:       Contract[User]           = summon[Contract[User]]
+val openDocContract:    Contract[OpenDoc]        = summon[Contract[OpenDoc]]
+val profileContract:    Contract[Profile]        = summon[Contract[Profile]]
+val ticketContract:     Contract[Ticket]         = summon[Contract[Ticket]]
+val orderContract:      Contract[Order]          = summon[Contract[Order]]
+val orderItemContract:  Contract[OrderItem]      = summon[Contract[OrderItem]]
+val eitherContract:     Contract[EitherHolder]   = summon[Contract[EitherHolder]]
+val apiKeyContract:     Contract[ApiKey]         = summon[Contract[ApiKey]]
+val prefsContract:      Contract[Prefs]          = summon[Contract[Prefs]]
+val catContract:        Contract[Cat]            = summon[Contract[Cat]]
+val dogContract:        Contract[Dog]            = summon[Contract[Dog]]
+val petHolderContract:  Contract[PetHolder]      = summon[Contract[PetHolder]]
+val timestampsContract: Contract[Timestamps]     = summon[Contract[Timestamps]]
+val documentContract:   Contract[Document]       = summon[Contract[Document]]
+val bookingContract:    Contract[Booking]        = summon[Contract[Booking]]
+val stayContract:       Contract[Stay]           = summon[Contract[Stay]]
+val cardPaymentContract: Contract[CardPayment]   = summon[Contract[CardPayment]]
+val bankPaymentContract: Contract[BankPayment]   = summon[Contract[BankPayment]]
+val invoiceContract:    Contract[Invoice]        = summon[Contract[Invoice]]
+val webLinkContract:    Contract[WebLink]        = summon[Contract[WebLink]]
+val resourceContract:   Contract[Resource]       = summon[Contract[Resource]]
+val scheduledEventContract: Contract[ScheduledEvent] = summon[Contract[ScheduledEvent]]
+val measurementContract: Contract[Measurement]   = summon[Contract[Measurement]]
+val paymentContract:    Contract[Payment]        = summon[Contract[Payment]]
+val lineItemContract:   Contract[LineItem]       = summon[Contract[LineItem]]
+val cartContract:       Contract[Cart]           = summon[Contract[Cart]]

@@ -12,8 +12,7 @@ final class ConstraintSpec extends SpecBase:
     @email                                               contactEmail: Option[String],
     @pattern("^[A-Z]{2}-\\d+$")                          code:         Option[String],
     @validateWith(Array(classOf[NoWhitespaceValidator])) slug:         String
-  )
-  given productContract: Contract[Product] = Contract.derived[Product]
+  ) derives Contract
 
   // ── @nonEmpty / @minLength / @maxLength ───────────────────────────────────
 
@@ -75,13 +74,13 @@ final class ConstraintSpec extends SpecBase:
 
   test("@email accepts a valid address") {
     val raw = Map("name" -> "Widget", "contactEmail" -> "support@example.com", "slug" -> "widget-pro")
-    val p = productContract.validate(raw).value
+    val p = summon[Contract[Product]].validate(raw).value
     p.contactEmail shouldBe Some("support@example.com")
   }
 
   test("@email rejects malformed address") {
     val raw = Map("name" -> "Widget", "contactEmail" -> "not-an-email", "slug" -> "widget-pro")
-    val result = productContract.validate(raw).left.value
+    val result = summon[Contract[Product]].validate(raw).left.value
     result.violations.toList.exists(v =>
       v.path == FieldPath("contactEmail") && v.code == ViolationCode.ConstraintFailed("email")
     ) shouldBe true
@@ -89,7 +88,7 @@ final class ConstraintSpec extends SpecBase:
 
   test("@email allows absent optional field") {
     val raw = Map("name" -> "Widget", "slug" -> "widget-pro")
-    val p = productContract.validate(raw).value
+    val p = summon[Contract[Product]].validate(raw).value
     p.contactEmail shouldBe None
   }
 
@@ -97,12 +96,12 @@ final class ConstraintSpec extends SpecBase:
 
   test("@pattern accepts matching value") {
     val raw = Map("name" -> "Widget", "code" -> "AB-42", "slug" -> "widget-pro")
-    productContract.validate(raw).value.code shouldBe Some("AB-42")
+    summon[Contract[Product]].validate(raw).value.code shouldBe Some("AB-42")
   }
 
   test("@pattern rejects non-matching value") {
     val raw = Map("name" -> "Widget", "code" -> "ab-42", "slug" -> "widget-pro")
-    val result = productContract.validate(raw).left.value
+    val result = summon[Contract[Product]].validate(raw).left.value
     result.violations.toList.exists(v =>
       v.path == FieldPath("code") && v.code == ViolationCode.ConstraintFailed("pattern")
     ) shouldBe true
@@ -110,19 +109,19 @@ final class ConstraintSpec extends SpecBase:
 
   test("@pattern allows absent optional field") {
     val raw = Map("name" -> "Widget", "slug" -> "widget-pro")
-    productContract.validate(raw).value.code shouldBe None
+    summon[Contract[Product]].validate(raw).value.code shouldBe None
   }
 
   // ── @validateWith ─────────────────────────────────────────────────────────
 
   test("@validateWith accepts valid value") {
     val raw = Map("name" -> "Widget", "slug" -> "widget-pro")
-    productContract.validate(raw).value.slug shouldBe "widget-pro"
+    summon[Contract[Product]].validate(raw).value.slug shouldBe "widget-pro"
   }
 
   test("@validateWith rejects invalid value") {
     val raw = Map("name" -> "Widget", "slug" -> "has spaces")
-    val result = productContract.validate(raw).left.value
+    val result = summon[Contract[Product]].validate(raw).left.value
     result.violations.toList.exists(v =>
       v.path == FieldPath("slug") && v.code == ViolationCode.ConstraintFailed("validateWith")
     ) shouldBe true
@@ -130,7 +129,7 @@ final class ConstraintSpec extends SpecBase:
 
   test("@validateWith preserves custom error message") {
     val raw = Map("name" -> "Widget", "slug" -> "has\ttab")
-    val result = productContract.validate(raw).left.value
+    val result = summon[Contract[Product]].validate(raw).left.value
     result.violations.toList.exists(v =>
       v.path == FieldPath("slug") && v.message.contains("whitespace")
     ) shouldBe true

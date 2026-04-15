@@ -1,5 +1,7 @@
 package io.dsentric
 
+import scala.deriving.Mirror
+
 /** Type alias for the raw untyped input / storage format. */
 type RawObject = Map[String, Any]
 
@@ -27,9 +29,17 @@ type RawObject = Map[String, Any]
  *     @masked                       password: Option[String]
  *   )
  *
- *   given userContract: Contract[User] = Contract.derived[User]
+ *   @contract
+ *   case class User(
+ *     @immutable @internal          id:       Long,
+ *     @nonEmpty  @maxLength(100)    name:     String,
+ *                                   email:    Option[String],
+ *     @min(0)    @max(150)          age:      Int = 0,
+ *     @masked                       password: Option[String]
+ *   ) derives Contract
  *
  *   // At the API layer:
+ *   val userContract = summon[Contract[User]]
  *   val result: Either[ContractViolations, User] =
  *     userContract.validate(incomingMap)
  * }}}
@@ -250,6 +260,17 @@ trait Contract[T]:
 object Contract:
 
   /**
+   * Summon the in-scope [[Contract]][T].
+   *
+   * This enables the concise call style:
+   *
+   * {{{
+   *   Contract[User].validate(raw)
+   * }}}
+   */
+  inline def apply[T](using c: Contract[T]): Contract[T] = c
+
+  /**
    * Derive a [[Contract]][T] for a case class T annotated with dsentric
    * annotations.
    *
@@ -257,8 +278,10 @@ object Contract:
    * code generation happens at compile time with zero runtime overhead.
    *
    * {{{
-   *   given Contract[User] = Contract.derived[User]
+   *   @contract
+   *   case class User(name: String) derives Contract
+   *   summon[Contract[User]]
    * }}}
    */
-  inline def derived[T <: Product]: Contract[T] =
+  inline def derived[T <: Product](using Mirror.ProductOf[T]): Contract[T] =
     internal.ContractMacro.derived[T]

@@ -83,9 +83,7 @@ case class User(
   @email                        email:    String,
   @min(0)    @max(150)          age:      Int = 0,
   @masked                       password: Option[String] = None
-)
-
-given userContract: Contract[User] = Contract.derived[User]
+) derives Contract
 ```
 
 That's it. The macro reads every annotation at **compile time** and generates a zero-overhead validator.
@@ -152,9 +150,9 @@ case class UserRegistration(
   @email                      email:    String,
   @min(18)                    age:      Int,
   @masked                     password: String
-)
+) derives Contract
 
-given regContract: Contract[UserRegistration] = Contract.derived[UserRegistration]
+val regContract = summon[Contract[UserRegistration]]
 
 // 1. Validate incoming request body
 def register(raw: RawObject): Either[ContractViolations, UserRegistration] =
@@ -176,9 +174,9 @@ case class UserProfile(
   @email                  email:    String,
   @min(0)  @max(150)      age:      Int,
                           bio:      Option[String] = None
-)
+) derives Contract
 
-given profileContract: Contract[UserProfile] = Contract.derived[UserProfile]
+val profileContract = summon[Contract[UserProfile]]
 
 def updateProfile(
   currentRaw: RawObject,
@@ -204,9 +202,9 @@ case class Order(
   @positive               quantity:    Int,
   @nonEmpty               shippingAddr: String,
   @email                  contactEmail: String
-)
+) derives Contract
 
-given orderContract: Contract[Order] = Contract.derived[Order]
+val orderContract = summon[Contract[Order]]
 
 def processCheckout(
   step1: RawObject,  // customerId, productId, quantity
@@ -262,9 +260,9 @@ case class Event(
   @nonEmpty               name:      String,
                           startDate: IsoDate,
                           endDate:   IsoDate
-)
+) derives Contract
 
-given eventContract: Contract[Event] = Contract.derived[Event]
+val eventContract = summon[Contract[Event]]
 
 eventContract.validate(Map(
   "name"      -> "Conference",
@@ -281,7 +279,7 @@ case class AuditStamp(
   @immutable @internal  createdBy: String,
   @immutable @internal  createdAt: Long,
                         updatedAt: Long
-)
+) derives Contract
 
 @contract
 case class Document(
@@ -289,10 +287,10 @@ case class Document(
   @nonEmpty             title:     String,
   @nonEmpty             body:      String,
   @include              audit:     AuditStamp
-)
+) derives Contract
 
-given auditContract:    Contract[AuditStamp] = Contract.derived[AuditStamp]
-given documentContract: Contract[Document]   = Contract.derived[Document]
+val auditContract = summon[Contract[AuditStamp]]
+val documentContract = summon[Contract[Document]]
 
 // Wire format is flat:
 // {"id":1, "title":"...", "body":"...", "createdBy":"admin", "createdAt":..., "updatedAt":...}
@@ -1220,9 +1218,9 @@ case class Booking(
   @nonEmpty checkIn:  Long,
   @nonEmpty checkOut: Long,
   @nonEmpty guestId:  String
-)
+) derives Contract
 
-given bookingContract: Contract[Booking] = Contract.derived[Booking]
+val bookingContract = summon[Contract[Booking]]
 
 // All validators run after field checks:
 bookingContract.validate(Map(
@@ -1363,7 +1361,7 @@ data class Contact(
 case class Timestamps(
   @immutable createdAt: Long,
              updatedAt: Long
-)
+) derives Contract
 
 @contract
 case class Article(
@@ -1371,10 +1369,10 @@ case class Article(
   @nonEmpty               title:      String,
   @nonEmpty               content:    String,
   @include                timestamps: Timestamps
-)
+) derives Contract
 
-given timestampsContract: Contract[Timestamps] = Contract.derived[Timestamps]
-given articleContract:    Contract[Article]    = Contract.derived[Article]
+val timestampsContract = summon[Contract[Timestamps]]
+val articleContract = summon[Contract[Article]]
 
 // Wire format (flat — no "timestamps" nesting):
 val raw: RawObject = Map(
@@ -1539,8 +1537,7 @@ case class User(
   @email contactEmail: Email,  // @email constraint still applies
   name:  String,
   age:   Age
-)
-given userContract: Contract[User] = Contract.derived[User]
+) derives Contract
 ```
 
 **Why use it?** Without `@decodable`, each wrapper would need a manual decoder:
@@ -1612,9 +1609,9 @@ By default all contracts are **closed** — any unknown field in the input produ
 case class Metadata(
   @nonEmpty key:   String,
   @nonEmpty value: String
-)
+) derives Contract
 
-given metadataContract: Contract[Metadata] = Contract.derived[Metadata]
+val metadataContract = summon[Contract[Metadata]]
 
 val raw = Map(
   "key"     -> "theme",
