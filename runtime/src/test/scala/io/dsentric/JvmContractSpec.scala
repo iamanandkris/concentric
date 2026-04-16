@@ -50,6 +50,7 @@ final class JvmContractSpec extends SpecBase:
   )
 
   val openDocContract: JvmContract[TestJvmOpenDoc] = JvmContract.ofRecord(classOf[TestJvmOpenDoc])
+  val openDocOpenContract: JvmOpenContract[TestJvmOpenDoc] = JvmOpenContract.ofRecord(classOf[TestJvmOpenDoc])
   val documentContract: JvmContract[TestJvmDocument] = JvmContract.ofRecord(classOf[TestJvmDocument])
   val contactContract: JvmContract[TestJvmContact] = JvmContract.ofRecord(classOf[TestJvmContact])
   val bookingRuleContract: JvmContract[TestJvmBooking] = JvmContract.ofRecord(classOf[TestJvmBooking])
@@ -1163,6 +1164,74 @@ final class JvmContractSpec extends SpecBase:
           extra.get("meta").isInstanceOf[java.util.Map[?, ?]],
           extra.get("tags").isInstanceOf[java.util.List[?]]
         )
+      }
+    ),
+
+    suite("JvmOpenContract")(
+
+      test("validate preserves typed value and extra fields together") {
+        val raw = jmap("key" -> "theme", "value" -> "dark", "source" -> "ui-settings")
+        val result = openDocOpenContract.validate(raw)
+
+        assertTrue(
+          result.isValid,
+          result.getValue.get.key() == "theme",
+          result.getExtras.get("source") == "ui-settings"
+        )
+      },
+
+      test("validate still reports missing required declared fields") {
+        val raw = jmap("value" -> "dark", "source" -> "ui-settings")
+        val result = openDocOpenContract.validate(raw)
+
+        assertTrue(
+          !result.isValid,
+          result.getExtras.isEmpty,
+          result.getErrors.asScala.exists(v =>
+            v.path == "key" && v.code == "MISSING"
+          )
+        )
+      },
+
+      test("validate still enforces declared-field constraints") {
+        val raw = jmap("key" -> "", "value" -> "dark", "source" -> "ui-settings")
+        val result = openDocOpenContract.validate(raw)
+
+        assertTrue(
+          !result.isValid,
+          result.getExtras.isEmpty,
+          result.getErrors.asScala.exists(v =>
+            v.path == "key" && v.code == "CONSTRAINT(nonEmpty)"
+          )
+        )
+      },
+
+      test("validatePatch preserves merged extra fields") {
+        val current = jmap("key" -> "theme", "value" -> "dark", "source" -> "ui-settings")
+        val patch   = jmap("value" -> "light", "region" -> "eu-west")
+        val result  = openDocOpenContract.validatePatch(current, patch)
+
+        assertTrue(
+          result.isValid,
+          result.getValue.get.value() == "light",
+          result.getExtras.get("source") == "ui-settings",
+          result.getExtras.get("region") == "eu-west"
+        )
+      },
+
+      test("sanitize keeps extras for open contracts") {
+        val raw = jmap("key" -> "theme", "value" -> "dark", "source" -> "ui-settings")
+        val sanitized = openDocOpenContract.sanitize(raw)
+
+        assertTrue(
+          sanitized.get("key") == "theme",
+          sanitized.get("source") == "ui-settings"
+        )
+      },
+
+      test("jsonSchema omits additionalProperties for open contracts") {
+        val schema = openDocOpenContract.jsonSchema()
+        assertTrue(!schema.containsKey("additionalProperties"))
       }
     ),
 

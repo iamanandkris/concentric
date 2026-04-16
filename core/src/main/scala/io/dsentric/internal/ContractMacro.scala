@@ -49,10 +49,31 @@ import io.dsentric.annotations.*
 object ContractMacro:
 
   inline def derived[T <: Product]: Contract[T] = ${ derivedImpl[T] }
+  inline def derivedOpen[T <: Product]: OpenContract[T] = ${ derivedOpenImpl[T] }
 
   // ── Top-level derivation ──────────────────────────────────────────────────
 
   private def derivedImpl[T <: Product: Type](using Quotes): Expr[Contract[T]] =
+    derivedExpr[T, Contract[T]](forceOpen = false) { (metasExpr, isOpenExpr, ctorExpr, toRawExpr, cvExpr) =>
+      '{ new ContractImpl[T]($metasExpr, $isOpenExpr, $ctorExpr, $toRawExpr, $cvExpr) }
+    }
+
+  private def derivedOpenImpl[T <: Product: Type](using Quotes): Expr[OpenContract[T]] =
+    derivedExpr[T, OpenContract[T]](forceOpen = true) { (metasExpr, isOpenExpr, ctorExpr, toRawExpr, cvExpr) =>
+      '{ new OpenContractImpl[T](new ContractImpl[T]($metasExpr, $isOpenExpr, $ctorExpr, $toRawExpr, $cvExpr)) }
+    }
+
+  private def derivedExpr[T <: Product: Type, C](using Quotes)(
+    forceOpen: Boolean
+  )(
+    build: (
+      Expr[List[FieldMeta]],
+      Expr[Boolean],
+      Expr[Map[String, Any] => T],
+      Expr[T => RawObject],
+      Expr[List[T => List[String]]]
+    ) => Expr[C]
+  ): Expr[C] =
     import quotes.reflect.*
 
     val tRepr   = TypeRepr.of[T]
@@ -102,13 +123,13 @@ object ContractMacro:
           List(mkFieldMeta(p, pt, outerIdx, companion))
       }
 
-    val isOpenExpr: Expr[Boolean]               = readOpenFlag(sym)
+    val isOpenExpr: Expr[Boolean]               = if forceOpen then Expr(true) else readOpenFlag(sym)
     val metasExpr:  Expr[List[FieldMeta]]       = Expr.ofList(metaEntries)
     val ctorExpr:   Expr[Map[String, Any] => T] = mkConstructFn[T](sym, params, paramTypes, companion)
     val toRawExpr:  Expr[T => RawObject]        = mkToRawFn[T](sym, params, paramTypes)
     val cvExpr:     Expr[List[T => List[String]]] = readContractValidators[T](sym)
 
-    '{ new ContractImpl[T]($metasExpr, $isOpenExpr, $ctorExpr, $toRawExpr, $cvExpr) }
+    build(metasExpr, isOpenExpr, ctorExpr, toRawExpr, cvExpr)
 
   // ── Read @contract(open = …) from the class annotation ───────────────────
 

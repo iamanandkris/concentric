@@ -23,12 +23,18 @@ import java.lang.annotation.Target;
  * public record User(Long id, String name) {}
  * </pre>
  *
- * @param open  When {@code true} the contract accepts additional properties not
- *              declared in the class definition.  Defaults to {@code false}
- *              (closed / strict contract).
+ * @param open  Legacy open-contract flag. When {@code true} the contract
+ *              accepts additional properties not declared in the class
+ *              definition. Defaults to {@code false} (closed / strict
+ *              contract).
+ *
+ *              <p>Prefer deriving {@code OpenContract} / {@code JvmOpenContract}
+ *              instead of relying on this flag. It remains available for
+ *              compatibility with existing callers.
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
 public @interface contract {
+    @Deprecated(since = "0.2.0", forRemoval = false)
     boolean open() default false;
 }

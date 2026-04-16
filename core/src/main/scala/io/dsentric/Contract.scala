@@ -181,10 +181,12 @@ trait Contract[T]:
    * Return the extra (unknown) fields present in a raw object that are not
    * declared by this contract.
    *
-   * This is only meaningful for ''open'' contracts (annotated with
-   * `@contract(open = true)`); for closed contracts all unknown fields are
-   * rejected during [[validate]], so the result will always be empty in
-   * practice.
+   * This is primarily meaningful for legacy open contracts created with
+   * `@contract(open = true)`. Prefer [[io.dsentric.OpenContract]] when
+   * unknown fields need to remain first-class after validation.
+   *
+   * For closed contracts all unknown fields are rejected during [[validate]],
+   * so the result will always be empty in practice.
    *
    * {{{
    *   val extra: RawObject = openContract.extraFields(raw)

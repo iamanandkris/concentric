@@ -17,6 +17,7 @@ dsentric turns an annotated case class (or Java record / Kotlin data class) into
 ### Core Operations
 
 - [validate — full object validation](#validate--full-object-validation)
+- [Decision Logic On Validated Values](#decision-logic-on-validated-values)
 - [validatePatch — partial update validation](#validatepatch--partial-update-validation)
 - [validatePartial and Draft — multi-step form validation](#validatepartial-and-draft--multi-step-form-validation)
 - [collectViolations — violations without construction](#collectviolations--violations-without-construction)
@@ -463,6 +464,127 @@ val bad = Map("id" -> 1L, "name" -> "", "email" -> "not-an-email", "age" -> -1)
 //   ConstraintFailed("email")     at "email"
 //   ConstraintFailed("min")       at "age"
 ```
+
+## Decision Logic On Validated Values
+
+Once `validate` succeeds, you have an ordinary typed Scala value. From that point onward, decision logic can use standard Scala pattern matching — including named case-class patterns and nested matches — without any dsentric-specific API.
+
+This is especially useful when you only care about a few fields from a larger contract.
+
+```scala
+@contract
+case class Address(
+  street: String,
+  city:   String,
+  country: String
+) derives Contract
+
+@contract
+case class User(
+  @immutable @internal id: Long,
+  @nonEmpty            name: String,
+                       email: Option[String],
+                       address: Address,
+                       age: Int = 0
+) derives Contract
+```
+
+After validation:
+
+```scala
+val raw: RawObject = Map(
+  "id"      -> 42L,
+  "name"    -> "Ana",
+  "email"   -> "ana@example.com",
+  "age"     -> 30,
+  "address" -> Map(
+    "street"  -> "221B Baker Street",
+    "city"    -> "London",
+    "country" -> "UK"
+  )
+)
+
+val user = Contract[User].validate(raw).toOption.get
+```
+
+You can match only on the `id` even though it is marked `@internal`:
+
+```scala
+user match
+  case User(id = 42L) =>
+    println("special internal user")
+  case User(id = otherId) =>
+    println(s"ordinary user: $otherId")
+```
+
+You can also match on both outer and inner contract fields:
+
+```scala
+user match
+  case User(id = 42L, address = Address(city = "London")) =>
+    println("London-based internal user")
+
+  case User(address = Address(country = "UK")) =>
+    println("UK user")
+
+  case User(email = Some(email)) =>
+    println(s"user with email $email")
+
+  case User(email = None) =>
+    println("user has no email")
+```
+
+### Kotlin and Java
+
+The same idea works on Kotlin and Java too: dsentric still validates raw input into typed nested values, so decision logic can use normal property access instead of stringly-typed map traversal. The main difference is that Scala has richer pattern matching syntax.
+
+**Kotlin:**
+
+```kotlin
+val result = contract.validate(raw)
+if (result.isValid) {
+    val user = result.value!!
+
+    when {
+        user.id == 42L && user.address.city == "London" ->
+            println("London internal user")
+
+        user.email != null ->
+            println("user with email ${user.email}")
+
+        else ->
+            println("fallback")
+    }
+}
+```
+
+**Java:**
+
+```java
+ValidationResult<User> result = contract.validate(raw);
+if (result.isValid()) {
+    User user = result.getValue().get();
+
+    if (user.id() == 42L && user.address().city().equals("London")) {
+        System.out.println("London internal user");
+    } else if (user.email() != null) {
+        System.out.println("user with email " + user.email());
+    } else {
+        System.out.println("fallback");
+    }
+}
+```
+
+So the experience is:
+
+- Scala: most concise, because named case-class patterns can match outer and inner fields directly.
+- Kotlin: still expressive, but more predicate-style with `when` and property checks.
+- Java: straightforward and typed, but more verbose.
+
+Two important notes:
+
+- `@internal` affects `sanitize` output, not the in-memory Scala value. If validation succeeds, the field is still available for pattern matching.
+- Nested contracts become ordinary nested case class values after validation, so Scala handles them naturally.
 
 <details>
 <summary>Java</summary>
@@ -1602,16 +1724,18 @@ Field-level `@extract` is enforced by `JvmContract` too.
 
 ## Open contracts
 
-By default all contracts are **closed** — any unknown field in the input produces an `UNKNOWN_FIELD` violation. Set `open = true` to silently accept and preserve unknown fields.
+By default all contracts are **closed** — any unknown field in the input produces an `UNKNOWN_FIELD` violation.
+
+On the Scala side, if you want unknown fields to remain first-class after validation, derive an `OpenContract` instead of a closed `Contract`:
 
 ```scala
-@contract(open = true)
+@contract
 case class Metadata(
   @nonEmpty key:   String,
   @nonEmpty value: String
-) derives Contract
+) derives OpenContract
 
-val metadataContract = summon[Contract[Metadata]]
+val metadataContract = OpenContract[Metadata]
 
 val raw = Map(
   "key"     -> "theme",
@@ -1620,45 +1744,37 @@ val raw = Map(
 )
 
 metadataContract.validate(raw)
-// → Right(Metadata("theme", "dark"))
+// → Right((Metadata("theme", "dark"), Map("source" -> "ui-settings")))
 
-// validate returns the typed model only; undeclared fields are not stored
-// on the case class.
+// Match on the typed declared value and the extra fields together:
+metadataContract.validate(raw) match
+  case Right((Metadata("theme", _), extras))
+      if extras.get("source").contains("ui-settings") =>
+    println("theme from UI settings")
 
-// Retrieve the extra fields:
-val extra: RawObject = metadataContract.extraFields(raw)
-// → Map("source" -> "ui-settings")
+  case Right((metadata, extras)) =>
+    println(s"known = $metadata, extras = $extras")
 
-// If you want both values to travel together in your application, wrap them
-// yourself.
-case class MetadataWithExtras(
-  metadata: Metadata,
-  extras: RawObject
-)
-
-val combined: Either[ContractViolations, MetadataWithExtras] =
-  metadataContract.validate(raw).map { metadata =>
-    MetadataWithExtras(
-      metadata = metadata,
-      extras = metadataContract.extraFields(raw)
-    )
-  }
+  case Left(errs) =>
+    println(errs)
 ```
+
+`OpenContract[T]` keeps the declared case class value and the undeclared extras together without forcing the extras into fake case-class fields.
 
 <details>
 <summary>Java</summary>
 
 ```java
 import io.dsentric.annotations.*;
-import io.dsentric.JvmContract;
+import io.dsentric.JvmOpenContract;
 
-@contract(open = true)
+@contract
 public record Metadata(
     @nonEmpty String key,
     @nonEmpty String value
 ) {}
 
-JvmContract<Metadata> metadataContract = JvmContract.ofRecord(Metadata.class);
+JvmOpenContract<Metadata> metadataContract = JvmOpenContract.ofRecord(Metadata.class);
 
 Map<String, Object> raw = Map.of(
     "key", "theme",
@@ -1666,22 +1782,12 @@ Map<String, Object> raw = Map.of(
     "source", "ui-settings"
 );
 
-ValidationResult<Metadata> result = metadataContract.validate(raw);
+OpenValidationResult<Metadata> result = metadataContract.validate(raw);
 // valid → result.getValue().get() is Metadata("theme", "dark")
-
-Map<String, Object> extra = metadataContract.extraFields(raw);
-// → {"source": "ui-settings"}
-
-record MetadataWithExtras(Metadata metadata, Map<String, Object> extras) {}
-
-Optional<MetadataWithExtras> combined =
-    result.getValue().map(metadata -> new MetadataWithExtras(
-        metadata,
-        metadataContract.extraFields(raw)
-    ));
+//         result.getExtras() is {"source": "ui-settings"}
 ```
 
-`JvmContract.ofRecord` reads `@contract(open = true)` and creates an open JVM contract automatically. Use the boolean overload only when you need to override the annotation.
+`JvmOpenContract.ofRecord` always preserves undeclared fields as extras. The older `@contract(open = true)` JVM path remains supported for compatibility, but `JvmOpenContract` is now the preferred API.
 
 </details>
 
@@ -1690,15 +1796,15 @@ Optional<MetadataWithExtras> combined =
 
 ```kotlin
 import io.dsentric.annotations.*
-import io.dsentric.JvmContract
+import io.dsentric.JvmOpenContract
 
-@contract(open = true)
+@contract
 data class Metadata(
     @field:nonEmpty val key: String,
     @field:nonEmpty val value: String
 )
 
-val metadataContract: JvmContract<Metadata> = JvmContract.ofPrimary(Metadata::class.java)
+val metadataContract: JvmOpenContract<Metadata> = JvmOpenContract.ofPrimary(Metadata::class.java)
 
 val raw = mapOf<String, Any>(
     "key" to "theme",
@@ -1708,25 +1814,10 @@ val raw = mapOf<String, Any>(
 
 val result = metadataContract.validate(raw)
 // valid -> result.value.get() is Metadata("theme", "dark")
-
-val extra: Map<String, Any> = metadataContract.extraFields(raw)
-// -> mapOf("source" to "ui-settings")
-
-data class MetadataWithExtras(
-    val metadata: Metadata,
-    val extras: Map<String, Any>
-)
-
-val combined: MetadataWithExtras? =
-    result.value.map { metadata ->
-        MetadataWithExtras(
-            metadata = metadata,
-            extras = metadataContract.extraFields(raw)
-        )
-    }.orElse(null)
+//          result.extras["source"] == "ui-settings"
 ```
 
-`JvmContract.ofPrimary` also reads `@contract(open = true)`, so unknown fields are accepted without passing `true` explicitly.
+`JvmOpenContract.ofPrimary` always preserves undeclared fields as extras. The older `@contract(open = true)` JVM path remains supported for compatibility, but `JvmOpenContract` is now the preferred API.
 
 </details>
 
@@ -1854,7 +1945,7 @@ For Java records (Java 16+) use `JvmContract.ofRecord` — the library discovers
 JvmContract<User> contract = JvmContract.ofRecord(User.class);
 
 // Open contract variant:
-JvmContract<Metadata> open = JvmContract.ofRecord(Metadata.class);
+JvmOpenContract<Metadata> open = JvmOpenContract.ofRecord(Metadata.class);
 ```
 
 For Kotlin data classes (and Java POJOs) use `JvmContract.ofPrimary` — it finds the primary non-synthetic constructor, and for real Kotlin classes it also uses Kotlin reflection to honour the true primary constructor, parameter defaults, and nullability:
@@ -1864,10 +1955,10 @@ For Kotlin data classes (and Java POJOs) use `JvmContract.ofPrimary` — it find
 val userContract: JvmContract<User> = JvmContract.ofPrimary(User::class.java)
 
 // Open variant:
-val metaContract: JvmContract<Metadata> = JvmContract.ofPrimary(Metadata::class.java)
+val metaContract: JvmOpenContract<Metadata> = JvmOpenContract.ofPrimary(Metadata::class.java)
 ```
 
-Both factories build the constructor function **once at startup** using reflection; there is no per-request overhead. `ofPrimary` uses Kotlin reflection automatically when the target class carries Kotlin metadata. They throw `IllegalArgumentException` with a clear message if the class does not meet the requirement (not a record for `ofRecord`; no usable constructor for `ofPrimary`).
+Both factory families build the constructor function **once at startup** using reflection; there is no per-request overhead. `ofPrimary` uses Kotlin reflection automatically when the target class carries Kotlin metadata. They throw `IllegalArgumentException` with a clear message if the class does not meet the requirement (not a record for `ofRecord`; no usable constructor for `ofPrimary`).
 
 Nested JVM contract types are also derived recursively for direct object fields, `Optional<nested>` fields, and `List<nested>` fields. A nested Java record / Kotlin data-class-style model can therefore be declared directly in the parent model without falling back to raw Scala maps, and nested `@reserved`, `@internal`, `@masked`, `@immutable`, and `@validateContract` rules are enforced through `validate`, `validatePatch`, `sanitize`, and `jsonSchema`.
 
@@ -1888,10 +1979,10 @@ JvmContract<User> contract = JvmContract.of(
 );
 
 // Open contract:
-JvmContract<Metadata> openContract = JvmContract.of(Metadata.class, constructFn);
+JvmOpenContract<Metadata> openContract = JvmOpenContract.of(Metadata.class, constructFn);
 ```
 
-The `fields` map passed to the lambda has already had all type coercions applied by the validation engine. `Optional` fields are always present (as `Optional.of(value)` or `Optional.empty()`), nested contract-backed fields arrive as typed nested JVM instances, nested `List` fields can be materialized as typed JVM elements, and map/list values are exposed as Java collections rather than Scala collections. The no-boolean overloads read openness from `@contract(open = true)`; the boolean overloads remain available when you need to override the annotation.
+The `fields` map passed to the lambda has already had all type coercions applied by the validation engine. `Optional` fields are always present (as `Optional.of(value)` or `Optional.empty()`), nested contract-backed fields arrive as typed nested JVM instances, nested `List` fields can be materialized as typed JVM elements, and map/list values are exposed as Java collections rather than Scala collections. Prefer `JvmOpenContract` for open semantics; the legacy `@contract(open = true)` and boolean-open overloads remain available for compatibility.
 
 Current JVM limitations:
 
@@ -2028,7 +2119,7 @@ All contract operations return `Either[ContractViolations, T]` (or plain values 
 
 | Annotation | Usage | Description |
 |---|---|---|
-| `@contract` | `@contract` or `@contract(open = true)` | Marks the class as a dsentric contract. When `open = true`, unknown fields are accepted silently. |
+| `@contract` | `@contract` | Marks the class as a dsentric contract. Legacy `open = true` remains supported for compatibility, but prefer `OpenContract` / `JvmOpenContract` for explicit open semantics. |
 | `@validateContract` | `@validateContract(Array(classOf[MyValidator]))` | Attaches cross-field validators that run after all field checks pass. Supported by both Scala `Contract[T]` and `JvmContract`, though authoring the validator class is currently more natural in Scala. |
 
 ### Field-level annotations

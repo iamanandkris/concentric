@@ -72,7 +72,9 @@ import scala.jdk.CollectionConverters.*
  *                    contains every required field (guaranteed to be present
  *                    and type-correct) and every optional [[java.util.Optional]]
  *                    field (either `Optional.of(v)` or `Optional.empty()`).
- * @param isOpen      When `true` unknown fields are silently accepted.
+ * @param isOpen      Legacy open-contract flag. When `true` unknown fields are
+ *                    silently accepted. Prefer [[JvmOpenContract]] when extras
+ *                    need to be preserved as part of the validation result.
  *                    Defaults to `false` (closed — strict mode).
  */
 class JvmContract[T](
@@ -456,6 +458,7 @@ class JvmContract[T](
 
 object JvmContract:
 
+  @annotation.nowarn("cat=deprecation")
   private def derivedOpen[T](clazz: Class[T]): Boolean =
     Option(clazz.getAnnotation(classOf[io.dsentric.annotations.contract]))
       .exists(_.open())
@@ -509,7 +512,9 @@ object JvmContract:
    * JvmContract<User> c = JvmContract.ofRecord(User.class);
    * }}}
    *
-   * The contract's openness is read from `@contract(open = ...)`.
+   * The contract's openness is read from the legacy `@contract(open = ...)`
+   * flag. Prefer [[JvmOpenContract.ofRecord]] when you want open-contract
+   * semantics explicitly.
    *
    * @throws IllegalArgumentException if the class is not a record or runs on JVM < 16.
    */
@@ -517,7 +522,8 @@ object JvmContract:
     new JvmContract(clazz, JvmContractDeriver.buildRecordConstructFn(clazz), derivedOpen(clazz))
 
   /**
-   * Overload that explicitly overrides the openness declared on `@contract`.
+   * Overload that explicitly overrides the legacy `@contract(open = ...)`
+   * flag. Prefer [[JvmOpenContract.ofRecord]] for open-contract semantics.
    */
   def ofRecord[T](clazz: Class[T], open: Boolean): JvmContract[T] =
     new JvmContract(clazz, JvmContractDeriver.buildRecordConstructFn(clazz), open)
@@ -547,7 +553,9 @@ object JvmContract:
    * val userContract = JvmContract.ofPrimary(User::class.java)
    * }}}
    *
-   * The contract's openness is read from `@contract(open = ...)`.
+   * The contract's openness is read from the legacy `@contract(open = ...)`
+   * flag. Prefer [[JvmOpenContract.ofPrimary]] when you want open-contract
+   * semantics explicitly.
    *
    * @throws IllegalArgumentException if no non-synthetic constructor is found.
    */
@@ -561,7 +569,8 @@ object JvmContract:
     new JvmContract(clazz, constructFn, derivedOpen(clazz))
 
   /**
-   * Overload that explicitly overrides the openness declared on `@contract`.
+   * Overload that explicitly overrides the legacy `@contract(open = ...)`
+   * flag. Prefer [[JvmOpenContract.ofPrimary]] for open-contract semantics.
    */
   def ofPrimary[T](clazz: Class[T], open: Boolean): JvmContract[T] =
     val constructFn = KotlinSupport.info(clazz)

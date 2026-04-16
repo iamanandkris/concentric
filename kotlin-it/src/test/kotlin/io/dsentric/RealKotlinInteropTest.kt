@@ -79,6 +79,21 @@ class RealKotlinInteropTest {
         assertEquals("****", paymentInfo!!["last4"])
         assertFalse(paymentInfo.containsKey("gatewayReference"))
     }
+
+    @Test
+    fun kotlinOpenContractShouldPreserveExtras() {
+        val contract = JvmOpenContract.ofPrimary(RealKotlinOpenMetadata::class.java)
+        val payload = linkedMapOf<String, Any>(
+            "key" to "theme",
+            "value" to "dark",
+            "source" to "ui-settings",
+        )
+
+        val result = contract.validate(LinkedHashMap(payload))
+        assertTrue(result.isValid)
+        assertEquals("theme", result.value.orElseThrow().key)
+        assertEquals("ui-settings", result.extras["source"])
+    }
 }
 
 @contract
@@ -134,4 +149,10 @@ data class RealKotlinOrderPayload(
     val items: List<RealKotlinOrderItem>,
     val totals: RealKotlinTotals,
     val paymentInfo: RealKotlinPaymentInfo,
+)
+
+@contract
+data class RealKotlinOpenMetadata(
+    @param:nonEmpty @field:nonEmpty val key: String,
+    @param:nonEmpty @field:nonEmpty val value: String,
 )
