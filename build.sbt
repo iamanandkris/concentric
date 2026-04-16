@@ -7,7 +7,7 @@ val scalaTestVersion = "3.2.18"
 val kotlinJvmVersion = "2.3.0"
 
 lazy val commonSettings = Seq(
-  organization  := "io.dsentric",
+  organization  := "io.concentric",
   version       := "0.1.0",
   scalaVersion  := scala3Version,
   scalacOptions ++= Seq(
@@ -25,7 +25,7 @@ lazy val commonSettings = Seq(
 lazy val annotations = project
   .in(file("annotations"))
   .settings(commonSettings)
-  .settings(moduleName := "dsentric-annotations")
+  .settings(moduleName := "concentric-annotations")
   .settings(
     // Java-only: disable Scala library & cross-path handling
     crossPaths       := false,
@@ -46,7 +46,7 @@ lazy val annotations = project
 //   - Scala 3 macro  Contract.derived[T]  (compile-time annotation reading)
 lazy val core = project
   .in(file("core"))
-  .settings(moduleName := "dsentric-core")
+  .settings(moduleName := "concentric-core")
   .settings(commonSettings)
   .settings(
     libraryDependencies ++= Seq(
@@ -65,7 +65,7 @@ lazy val core = project
 //   - JvmViolation        — flat string path/code/message (no Scala types)
 lazy val runtime = project
   .in(file("runtime"))
-  .settings(moduleName := "dsentric-runtime")
+  .settings(moduleName := "concentric-runtime")
   .settings(commonSettings)
   .settings(
     // Conditionally exclude Java record test sources when running on JVM < 16.
@@ -98,7 +98,7 @@ lazy val runtime = project
 lazy val kotlinInterop = project
   .in(file("kotlin-it"))
   .enablePlugins(KotlinPlugin)
-  .settings(moduleName := "dsentric-kotlin-it")
+  .settings(moduleName := "concentric-kotlin-it")
   .settings(commonSettings)
   .settings(
     kotlinVersion := kotlinJvmVersion,
@@ -118,6 +118,6 @@ lazy val kotlinInterop = project
 lazy val root = (project in file("."))
   .aggregate(annotations, core, runtime, kotlinInterop)
   .settings(
-    name := "dsentric",
+    name := "concentric",
     publish / skip := true
   )

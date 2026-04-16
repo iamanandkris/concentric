@@ -1,8 +1,8 @@
-# dsentric
+# concentric
 
 A compile-time, annotation-driven validation and contract library for Scala 3, with full interop support for Java and Kotlin.
 
-dsentric turns an annotated case class (or Java record / Kotlin data class) into a **Contract** — a reusable object that validates, sanitizes, patches, and serialises structured data. Every operation accumulates *all* violations rather than short-circuiting on the first failure, and every violation carries a structured code that is easy to map to HTTP status codes or API error envelopes.
+concentric turns an annotated case class (or Java record / Kotlin data class) into a **Contract** — a reusable object that validates, sanitizes, patches, and serialises structured data. Every operation accumulates *all* violations rather than short-circuiting on the first failure, and every violation carries a structured code that is easy to map to HTTP status codes or API error envelopes.
 
 ---
 
@@ -54,16 +54,16 @@ Add the following to your `build.sbt`:
 
 ```scala
 // Annotations (pure Java — works for Scala, Java, and Kotlin projects)
-libraryDependencies += "io.dsentric" % "dsentric-annotations" % "0.1.0"
+libraryDependencies += "io.concentric" % "concentric-annotations" % "0.1.0"
 
 // Core library (Scala 3, no effect dependency)
-libraryDependencies += "io.dsentric" %% "dsentric-core" % "0.1.0"
+libraryDependencies += "io.concentric" %% "concentric-core" % "0.1.0"
 
 // Java/Kotlin reflection-based interop (no macro required)
-libraryDependencies += "io.dsentric" %% "dsentric-runtime" % "0.1.0"
+libraryDependencies += "io.concentric" %% "concentric-runtime" % "0.1.0"
 ```
 
-The `dsentric-core` module requires **Scala 3** and has no runtime effect dependency. The `dsentric-annotations` module is pure Java 11+ and has no Scala dependency. The `dsentric-runtime` module provides `JvmContract[T]` for Java and Kotlin callers.
+The `concentric-core` module requires **Scala 3** and has no runtime effect dependency. The `concentric-annotations` module is pure Java 11+ and has no Scala dependency. The `concentric-runtime` module provides `JvmContract[T]` for Java and Kotlin callers.
 
 ---
 
@@ -74,8 +74,8 @@ The `dsentric-core` module requires **Scala 3** and has no runtime effect depend
 Annotate a case class with `@contract` and derive the contract with `Contract.derived[T]`:
 
 ```scala
-import io.dsentric.annotations.*
-import io.dsentric.*
+import io.concentric.annotations.*
+import io.concentric.*
 
 @contract
 case class User(
@@ -93,8 +93,8 @@ That's it. The macro reads every annotation at **compile time** and generates a 
 <summary>Java</summary>
 
 ```java
-import io.dsentric.annotations.*;
-import io.dsentric.JvmContract;
+import io.concentric.annotations.*;
+import io.concentric.JvmContract;
 
 @contract
 public record User(
@@ -117,8 +117,8 @@ static final JvmContract<User> userContract = JvmContract.ofRecord(User.class);
 <summary>Kotlin</summary>
 
 ```kotlin
-import io.dsentric.annotations.*
-import io.dsentric.JvmContract
+import io.concentric.annotations.*
+import io.concentric.JvmContract
 
 @contract
 data class User(
@@ -307,8 +307,8 @@ val safe = documentContract.sanitize(storedRaw)
 <summary>Java — full CRUD contract lifecycle</summary>
 
 ```java
-import io.dsentric.annotations.*;
-import io.dsentric.*;
+import io.concentric.annotations.*;
+import io.concentric.*;
 import java.util.*;
 
 @contract
@@ -357,10 +357,10 @@ public class ProductService {
 <summary>Kotlin — full data class lifecycle</summary>
 
 ```kotlin
-import io.dsentric.JvmContract
-import io.dsentric.JvmViolation
-import io.dsentric.ValidationResult
-import io.dsentric.annotations.*
+import io.concentric.JvmContract
+import io.concentric.JvmViolation
+import io.concentric.ValidationResult
+import io.concentric.annotations.*
 
 @contract
 data class Product(
@@ -414,7 +414,7 @@ All violations are accumulated — it never short-circuits.
 ### Scala
 
 ```scala
-import io.dsentric.*
+import io.concentric.*
 
 val raw: RawObject = Map(
   "id"       -> 1L,
@@ -467,7 +467,7 @@ val bad = Map("id" -> 1L, "name" -> "", "email" -> "not-an-email", "age" -> -1)
 
 ## Decision Logic On Validated Values
 
-Once `validate` succeeds, you have an ordinary typed Scala value. From that point onward, decision logic can use standard Scala pattern matching — including named case-class patterns and nested matches — without any dsentric-specific API.
+Once `validate` succeeds, you have an ordinary typed Scala value. From that point onward, decision logic can use standard Scala pattern matching — including named case-class patterns and nested matches — without any concentric-specific API.
 
 This is especially useful when you only care about a few fields from a larger contract.
 
@@ -536,7 +536,7 @@ user match
 
 ### Kotlin and Java
 
-The same idea works on Kotlin and Java too: dsentric still validates raw input into typed nested values, so decision logic can use normal property access instead of stringly-typed map traversal. The main difference is that Scala has richer pattern matching syntax.
+The same idea works on Kotlin and Java too: concentric still validates raw input into typed nested values, so decision logic can use normal property access instead of stringly-typed map traversal. The main difference is that Scala has richer pattern matching syntax.
 
 **Kotlin:**
 
@@ -1058,7 +1058,7 @@ val pretty = userContract.toJson(user, 2)
 `RawJson` is the zero-dependency JSON serialiser used internally by `toJson` and `sanitizeJson`. You can call it directly when you already have a `RawObject` from some other source.
 
 ```scala
-import io.dsentric.RawJson
+import io.concentric.RawJson
 
 val raw: RawObject = Map("name" -> "Alice", "scores" -> List(1, 2, 3), "active" -> true)
 RawJson.stringify(raw)           // → {"active":true,"name":"Alice","scores":[1,2,3]}
@@ -1319,7 +1319,7 @@ For business rules that span multiple fields — things that cannot be expressed
 The validator runs **after** all field-level checks pass. If any field-level violation exists, contract validators are not called.
 
 ```scala
-import io.dsentric.ContractValidator
+import io.concentric.ContractValidator
 
 class CheckInBeforeCheckOut extends ContractValidator[Booking]:
   def validate(b: Booking): List[String] =
@@ -1397,7 +1397,7 @@ data class Booking(
 Implement `FieldValidator[A]` to create reusable field-level validation logic beyond what annotations provide.
 
 ```scala
-import io.dsentric.annotations.{FieldValidator, validateWith}
+import io.concentric.annotations.{FieldValidator, validateWith}
 
 class E164PhoneValidator extends FieldValidator[String]:
   def validate(value: String): List[String] =
@@ -1425,7 +1425,7 @@ Multiple validators are all run; their failures are accumulated together. `JvmCo
 <summary>Java</summary>
 
 ```java
-import io.dsentric.annotations.*;
+import io.concentric.annotations.*;
 import java.util.List;
 
 public class E164PhoneValidator implements FieldValidator<String> {
@@ -1450,9 +1450,9 @@ public record Contact(
 <summary>Kotlin</summary>
 
 ```kotlin
-import io.dsentric.annotations.FieldValidator
-import io.dsentric.annotations.contract
-import io.dsentric.annotations.validateWith
+import io.concentric.annotations.FieldValidator
+import io.concentric.annotations.contract
+import io.concentric.annotations.validateWith
 
 class E164PhoneValidator : FieldValidator<String> {
     override fun validate(value: String): List<String> =
@@ -1519,8 +1519,8 @@ Constraints, `@immutable`, and all other annotations on inner fields are fully r
 <summary>Java</summary>
 
 ```java
-import io.dsentric.annotations.*;
-import io.dsentric.JvmContract;
+import io.concentric.annotations.*;
+import io.concentric.JvmContract;
 import java.util.Map;
 
 @contract
@@ -1558,8 +1558,8 @@ Map<String, Object> out = articleContract.toRaw(result.getValue().get());
 <summary>Kotlin</summary>
 
 ```kotlin
-import io.dsentric.JvmContract
-import io.dsentric.annotations.*
+import io.concentric.JvmContract
+import io.concentric.annotations.*
 
 @contract
 data class Timestamps(
@@ -1765,8 +1765,8 @@ metadataContract.validate(raw) match
 <summary>Java</summary>
 
 ```java
-import io.dsentric.annotations.*;
-import io.dsentric.JvmOpenContract;
+import io.concentric.annotations.*;
+import io.concentric.JvmOpenContract;
 
 @contract
 public record Metadata(
@@ -1795,8 +1795,8 @@ OpenValidationResult<Metadata> result = metadataContract.validate(raw);
 <summary>Kotlin</summary>
 
 ```kotlin
-import io.dsentric.annotations.*
-import io.dsentric.JvmOpenContract
+import io.concentric.annotations.*
+import io.concentric.JvmOpenContract
 
 @contract
 data class Metadata(
@@ -1988,7 +1988,7 @@ Current JVM limitations:
 
 - Optionality is inferred from `java.util.Optional<T>`, real Kotlin metadata, or a supported runtime `@Nullable` annotation. Plain Java references and non-Kotlin classes without such metadata are still treated as required.
 - Recursive JVM derivation now covers direct nested contract objects, `Optional<nested>`, and `List<nested>`. `Map<String, nested>` and broader generic container support are not yet automatic.
-- The dedicated real-Kotlin interop test module in [kotlin-it](/Users/anand.krishnan/example/dsentric-zio/kotlin-it) now compiles on Java 25 in this repo. That requires a Kotlin compiler/runtime new enough to understand Java 25 class-library metadata; this build uses Kotlin `2.3.0`.
+- The dedicated real-Kotlin interop test module in [kotlin-it](/Users/anand.krishnan/example/concentric-zio/kotlin-it) now compiles on Java 25 in this repo. That requires a Kotlin compiler/runtime new enough to understand Java 25 class-library metadata; this build uses Kotlin `2.3.0`.
 
 ### ValidationResult[T]
 
@@ -2041,7 +2041,7 @@ It exists as a convenience wrapper over `Map<String, Object>`; field names remai
 <details>
 <summary>Kotlin annotation placement</summary>
 
-Kotlin data classes place annotations differently depending on the use-site target. dsentric detects both styles:
+Kotlin data classes place annotations differently depending on the use-site target. concentric detects both styles:
 
 **With `@field:` (recommended — annotations on JVM backing field):**
 
@@ -2119,7 +2119,7 @@ All contract operations return `Either[ContractViolations, T]` (or plain values 
 
 | Annotation | Usage | Description |
 |---|---|---|
-| `@contract` | `@contract` | Marks the class as a dsentric contract. Legacy `open = true` remains supported for compatibility, but prefer `OpenContract` / `JvmOpenContract` for explicit open semantics. |
+| `@contract` | `@contract` | Marks the class as a concentric contract. Legacy `open = true` remains supported for compatibility, but prefer `OpenContract` / `JvmOpenContract` for explicit open semantics. |
 | `@validateContract` | `@validateContract(Array(classOf[MyValidator]))` | Attaches cross-field validators that run after all field checks pass. Supported by both Scala `Contract[T]` and `JvmContract`, though authoring the validator class is currently more natural in Scala. |
 
 ### Field-level annotations
