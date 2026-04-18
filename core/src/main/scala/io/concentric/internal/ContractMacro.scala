@@ -50,13 +50,56 @@ object ContractMacro:
 
   inline def derived[T <: Product]: Contract[T] = ${ derivedImpl[T] }
   inline def derivedOpen[T <: Product]: OpenContract[T] = ${ derivedOpenImpl[T] }
+  // Called by Contract.AspectOf.derived — T is the aspect class, S is the source.
+  inline def derivedAspect[T <: Product, S <: Product]: Contract[T] = ${ derivedAspectImpl[T, S] }
+  // Called by IsAspectOf.derived — checks @aspectOf[S] on A at compile time.
+  def isAspectOfImpl[S: Type, A: Type](using Quotes): Expr[IsAspectOf[S, A]] =
+    import quotes.reflect.*
+    val aSym = TypeRepr.of[A].typeSymbol
+    val sSym = TypeRepr.of[S].typeSymbol
+
+    val hasAnnot = aSym.annotations.exists { annot =>
+      annot.tpe match
+        case AppliedType(fn, List(sType)) =>
+          fn.typeSymbol.fullName == "io.concentric.aspectOf" &&
+          (sType =:= TypeRepr.of[S])
+        case _ => false
+    }
+
+    if !hasAnnot then
+      report.errorAndAbort(
+        s"'${aSym.name}' is not a structural aspect of '${sSym.name}': " +
+        s"annotate it with @aspectOf[${sSym.name}]"
+      )
+
+    '{ IsAspectOf.singleton.asInstanceOf[IsAspectOf[S, A]] }
 
   // ── Top-level derivation ──────────────────────────────────────────────────
 
   private def derivedImpl[T <: Product: Type](using Quotes): Expr[Contract[T]] =
-    derivedExpr[T, Contract[T]](forceOpen = false) { (metasExpr, isOpenExpr, ctorExpr, toRawExpr, cvExpr) =>
-      '{ new ContractImpl[T]($metasExpr, $isOpenExpr, $ctorExpr, $toRawExpr, $cvExpr) }
-    }
+    import quotes.reflect.*
+    // Detect @aspectOf[S] on T and dispatch to aspect derivation if present.
+    val sym = TypeRepr.of[T].typeSymbol
+    val aspectSTypeOpt: Option[TypeRepr] =
+      sym.annotations
+        .find { annot =>
+          annot.tpe match
+            case AppliedType(fn, List(_)) => fn.typeSymbol.fullName == "io.concentric.aspectOf"
+            case _                        => false
+        }
+        .map { annot =>
+          annot.tpe match
+            case AppliedType(_, List(sType)) => sType
+            case _ => report.errorAndAbort("@aspectOf requires exactly one type argument")
+        }
+
+    aspectSTypeOpt match
+      case Some(sType) =>
+        derivedAspectFromTypeRepr[T](sType)
+      case None =>
+        derivedExpr[T, Contract[T]](forceOpen = false) { (metasExpr, isOpenExpr, ctorExpr, toRawExpr, cvExpr) =>
+          '{ new ContractImpl[T]($metasExpr, $isOpenExpr, $ctorExpr, $toRawExpr, $cvExpr) }
+        }
 
   private def derivedOpenImpl[T <: Product: Type](using Quotes): Expr[OpenContract[T]] =
     derivedExpr[T, OpenContract[T]](forceOpen = true) { (metasExpr, isOpenExpr, ctorExpr, toRawExpr, cvExpr) =>
@@ -197,6 +240,121 @@ object ContractMacro:
       case _ => None
     }
 
+  // ── Aspect derivation ────────────────────────────────────────────────────
+  //
+  // Derives Contract[T] where T is a structural aspect of source type S.
+  // Called via Contract.AspectOf.derived — do not call directly.
+  //
+  // Constraint annotations are inherited from S's matching fields; T's own
+  // annotations override S's for the same annotation type.  T's field types
+  // determine optionality and decoding.
+  //
+  // We accept sTypeRepr: TypeRepr in the internal helper rather than a type
+  // parameter S to keep the implementation uniform regardless of call site.
+
+  private def derivedAspectFromTypeRepr[T <: Product: Type](using Quotes)(
+    sTypeRepr: quotes.reflect.TypeRepr
+  ): Expr[Contract[T]] =
+    import quotes.reflect.*
+
+    val sSym = sTypeRepr.typeSymbol
+
+    if !sSym.flags.is(Flags.Case) then
+      report.errorAndAbort(
+        s"@aspectOf: source type '${sSym.name}' must be a case class. Got: ${sTypeRepr.show}"
+      )
+
+    // 1. Require Contract[S] or OpenContract[S] to be in scope — compile-time
+    //    dependency check.  Both are valid sources for an aspect; we only need
+    //    the source's field annotations, not its runtime contract instance.
+    val hasSourceContract: Boolean = sTypeRepr.asType match
+      case '[s] =>
+        Expr.summon[Contract[s]].isDefined || Expr.summon[OpenContract[s]].isDefined
+
+    if !hasSourceContract then
+      report.errorAndAbort(
+        s"@aspectOf[${sSym.name}]: no Contract[${sSym.name}] or OpenContract[${sSym.name}] found in scope. " +
+        s"Ensure '${sSym.name}' derives Contract (or OpenContract) before defining this aspect."
+      )
+
+    val tRepr = TypeRepr.of[T]
+    val tSym  = tRepr.typeSymbol
+
+    if !tSym.flags.is(Flags.Case) then
+      report.errorAndAbort(s"@aspectOf: '${tSym.name}' must be a case class")
+
+    // 2. Collect S's constructor params and their annotations, keyed by name.
+    val sParamAnnots: Map[String, List[Term]] =
+      sSym.primaryConstructor.paramSymss.headOption
+        .getOrElse(List.empty)
+        .map(p => p.name -> p.annotations)
+        .toMap
+
+    // 3. T's constructor params and types.
+    val tCompanion = tSym.companionModule
+    val tParams: List[Symbol] =
+      tSym.primaryConstructor.paramSymss.headOption.getOrElse(
+        report.errorAndAbort(s"'${tSym.name}' has no constructor parameters")
+      )
+    val tParamTypes: List[TypeRepr] =
+      tRepr.memberType(tSym.primaryConstructor) match
+        case MethodType(_, types, _)              => types
+        case PolyType(_, _, MethodType(_, ts, _)) => ts
+        case _ => report.errorAndAbort(s"'${tSym.name}': unexpected constructor type shape")
+
+    // 4. Build FieldMeta list.
+    //
+    // For fields that exist in S: inherit S's constraint annotations; T's own
+    // annotations override S's on a per-annotation-type basis.  Policy
+    // annotations (@reserved, @internal, @immutable, @masked) are NOT
+    // inherited — the aspect author explicitly controls access.
+    //
+    // For fields that do NOT exist in S: accepted as fresh fields using only
+    // their own annotations (matching original dsentric Aspect behaviour where
+    // new fields declared in the aspect body are simply added alongside the
+    // inherited ones).
+    //
+    // Note: there is intentionally no compile error for fields absent from S.
+    // This allows patterns like `confirmPassword` (request-only, not stored)
+    // to live alongside inherited source fields.
+    val policyAnnotSyms: Set[Symbol] = Set(
+      TypeRepr.of[annotations.reserved].typeSymbol,
+      TypeRepr.of[annotations.internal].typeSymbol,
+      TypeRepr.of[annotations.immutable].typeSymbol,
+      TypeRepr.of[annotations.masked].typeSymbol
+    )
+
+    val metaEntries: List[Expr[FieldMeta]] =
+      tParams.zip(tParamTypes).zipWithIndex.map { case ((tp, tpt), idx) =>
+        if sParamAnnots.contains(tp.name) then
+          // Source field — merge annotations.
+          val sAnnots     = sParamAnnots(tp.name)
+          val tAnnots     = tp.annotations
+          val tAnnotTypes = tAnnots.map(_.tpe.typeSymbol).toSet
+          val merged      = sAnnots.filterNot { a =>
+            policyAnnotSyms.contains(a.tpe.typeSymbol) ||
+            tAnnotTypes.contains(a.tpe.typeSymbol)
+          } ++ tAnnots
+          mkFieldMetaWithAnnots(tp, tpt, idx, tCompanion, merged)
+        else
+          // New field not present in S — use only its own annotations.
+          mkFieldMeta(tp, tpt, idx, tCompanion)
+      }
+
+    val metasExpr:  Expr[List[FieldMeta]]         = Expr.ofList(metaEntries)
+    // Aspects always derive Contract (not OpenContract), so they are always closed.
+    // There is no mechanism for an open aspect; @contract(open=true) is deprecated.
+    val isOpenExpr: Expr[Boolean]                = Expr(false)
+    val ctorExpr:   Expr[Map[String, Any] => T]  = mkConstructFn[T](tSym, tParams, tParamTypes, tCompanion)
+    val toRawExpr:  Expr[T => RawObject]         = mkToRawFn[T](tSym, tParams, tParamTypes)
+    val cvExpr:     Expr[List[T => List[String]]] = readContractValidators[T](tSym)
+
+    '{ new ContractImpl[T]($metasExpr, $isOpenExpr, $ctorExpr, $toRawExpr, $cvExpr) }
+
+  // Keep the typed entry point for potential direct call use.
+  private def derivedAspectImpl[T <: Product: Type, S <: Product: Type](using Quotes): Expr[Contract[T]] =
+    derivedAspectFromTypeRepr[T](quotes.reflect.TypeRepr.of[S])
+
   // ── Build FieldMeta for one constructor parameter ─────────────────────────
 
   private def mkFieldMeta(using q: Quotes)(
@@ -205,10 +363,18 @@ object ContractMacro:
     idx:       Int,
     companion: q.reflect.Symbol
   ): Expr[FieldMeta] =
+    mkFieldMetaWithAnnots(param, paramType, idx, companion, param.annotations)
+
+  private def mkFieldMetaWithAnnots(using q: Quotes)(
+    param:     q.reflect.Symbol,
+    paramType: q.reflect.TypeRepr,
+    idx:       Int,
+    companion: q.reflect.Symbol,
+    annots:    List[q.reflect.Term]
+  ): Expr[FieldMeta] =
     import q.reflect.*
 
     val name   = param.name
-    val annots = param.annotations
 
     // ── annotation helpers ──────────────────────────────────────────────────
 

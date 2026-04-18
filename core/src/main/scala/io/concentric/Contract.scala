@@ -79,6 +79,35 @@ trait Contract[T]:
   def validatePatch(currentRaw: RawObject, patch: RawObject): Either[ContractViolations, T]
 
   /**
+   * Validate a typed aspect value as a patch against the current raw state.
+   *
+   * Equivalent to calling [[validatePatch]] with [[toPatchRaw]] applied to
+   * `aspect` — but without the manual `.collect`.  Both the aspect contract
+   * and the compile-time proof that `A` is an `@aspectOf[T]` are resolved
+   * implicitly, making the call site a clean two-step:
+   *
+   * {{{
+   *   for
+   *     patch   <- patchContract.validate(requestBody)
+   *     updated <- userContract.validatePatch(currentRaw, patch)
+   *   yield updated
+   * }}}
+   *
+   * A compile error is emitted if `A` does not carry `@aspectOf[T]` — the
+   * relationship is enforced at compile time, not by convention.
+   *
+   * @param currentRaw     The current persisted state as a raw map.
+   * @param aspect         The typed aspect / patch value to apply.
+   * @param aspectContract Implicitly summoned [[Contract]][A].
+   * @param evidence       Compile-time proof that `A` is an `@aspectOf[T]`.
+   */
+  def validatePatch[A <: Product](currentRaw: RawObject, aspect: A)(using
+    aspectContract: Contract[A],
+    evidence: IsAspectOf[T, A]
+  ): Either[ContractViolations, T] =
+    validatePatch(currentRaw, aspectContract.toPatchRaw(aspect))
+
+  /**
    * Produce an output-safe representation of T as a [[RawObject]].
    *
    * Transformations applied:
@@ -141,6 +170,27 @@ trait Contract[T]:
    * is the flat wire format — inner fields are promoted to the top level.
    */
   def toRaw(t: T): RawObject
+
+  /**
+   * Serialize `t` to a patch-ready [[RawObject]]: `Option` fields that are
+   * `None` are omitted (absent from patch), `Some(v)` fields are unwrapped
+   * to `v`, and non-`Option` fields are passed through as-is.
+   *
+   * This is the strip step that makes aspect-based PATCH handlers possible
+   * without a manual `.collect`.  It is used internally by the typed
+   * [[validatePatch]] overload.
+   *
+   * {{{
+   *   val patchRaw = patchContract.toPatchRaw(patch)
+   *   // Map("email" -> "new@example.com")  — None fields omitted, Some unwrapped
+   * }}}
+   */
+  def toPatchRaw(t: T): RawObject =
+    toRaw(t).flatMap {
+      case (_, None)         => None
+      case (k, Some(v: Any)) => Some(k -> v)
+      case (k, v)            => Some(k -> v)
+    }
 
   /**
    * Derive a JSON Schema (draft-07) document for this contract.
@@ -279,11 +329,104 @@ object Contract:
    * This is a Scala 3 inline macro — all annotation reading and constructor
    * code generation happens at compile time with zero runtime overhead.
    *
+   * When T is annotated with `@aspectOf[S]`, the macro automatically switches
+   * to aspect derivation: constraint annotations are inherited from S's
+   * matching fields, optionality is determined by T's field types, and any
+   * field not listed in T is excluded from the contract.  See [[AspectOf]]
+   * for the full aspect documentation.
+   *
    * {{{
    *   @contract
-   *   case class User(name: String) derives Contract
-   *   summon[Contract[User]]
+   *   case class User(
+   *     @email    val email: String,
+   *     @nonEmpty val name:  String,
+   *     @reserved val role:  Option[String] = None
+   *   ) derives Contract
+   *
+   *   @aspectOf[User]
+   *   case class UserPatch(
+   *     val email: Option[String] = None,
+   *     val name:  Option[String] = None
+   *   ) derives Contract
+   *
+   *   val userContract  = summon[Contract[User]]
+   *   val patchContract = summon[Contract[UserPatch]]
    * }}}
    */
   inline def derived[T <: Product](using Mirror.ProductOf[T]): Contract[T] =
     internal.ContractMacro.derived[T]
+
+  /**
+   * Structural aspect (variant) of an existing contract type `S`.
+   *
+   * `Contract.AspectOf[S]` is a kind-`* -> *` type constructor — `derives
+   * Contract.AspectOf[S]` on a case class `T` generates a full
+   * `Contract.AspectOf[S, T]` (which extends `Contract[T]`) that can be
+   * summoned as either:
+   *
+   *   - `summon[Contract[T]]`                — standard contract interface
+   *   - `summon[Contract.AspectOf[S, T]]`    — typed aspect handle
+   *
+   * Constraint annotations (`@email`, `@nonEmpty`, `@min`, etc.) are
+   * inherited from `S`'s matching fields.  Policy annotations (`@reserved`,
+   * `@internal`, `@immutable`, `@masked`) are NOT inherited — the aspect
+   * author explicitly controls access permissions.  Any annotation declared
+   * on a field in `T` overrides the corresponding one from `S`.
+   *
+   * A compile error is emitted if:
+   *  - `Contract[S]` is not in scope (dependency enforcement)
+   *  - any field in `T` does not exist in `S` (drift detection)
+   *
+   * {{{
+   *   @contract
+   *   case class User(
+   *     @email    val email: String,
+   *     @nonEmpty val name:  String,
+   *     @reserved val role:  Option[String] = None
+   *   ) derives Contract
+   *
+   *   // PATCH variant — @email / @nonEmpty inherited, role excluded by omission.
+   *   case class UserPatch(
+   *     val email: Option[String] = None,
+   *     val name:  Option[String] = None
+   *   ) derives Contract.AspectOf[User]
+   *
+   *   val userContract  = summon[Contract[User]]
+   *   val patchContract = summon[Contract[UserPatch]]   // works — AspectOf extends Contract
+   *
+   *   // Typical PATCH handler:
+   *   for
+   *     patch   <- patchContract.validate(requestBody)
+   *     patchRaw = patchContract.toRaw(patch).collect { case (k, Some(v)) => k -> v }
+   *     updated <- userContract.validatePatch(current, patchRaw)
+   *   yield updated
+   * }}}
+   *
+   * @tparam S  The source contract type this aspect is derived from.
+   * @tparam T  The aspect case class (filled in by the `derives` mechanism).
+   */
+  sealed abstract class AspectOf[S <: Product, T <: Product] extends Contract[T]
+
+  /** Concrete [[AspectOf]] instance produced by [[AspectOf.derived]].
+   *  Delegates all [[Contract]][T] operations to an underlying [[ContractImpl]].
+   *  Private to this file so the `sealed` invariant is preserved. */
+  private final class AspectOfImpl[S <: Product, T <: Product](
+    private val impl: Contract[T]
+  ) extends AspectOf[S, T]:
+    export impl.{
+      fieldMetas, validate, validatePatch, sanitize,
+      validatePartial, collectViolations, toRaw, jsonSchema, extraFields
+    }
+
+  object AspectOf:
+    /**
+     * Derives a [[Contract.AspectOf]][S, T] for `T` as a structural aspect of `S`.
+     *
+     * Called automatically by `derives Contract.AspectOf[S]`.
+     * Requires `Contract[S]` in implicit scope — compile error if absent.
+     */
+    inline def derived[S <: Product, T <: Product](
+      using Mirror.ProductOf[T],
+      Contract[S]
+    ): Contract.AspectOf[S, T] =
+      new AspectOfImpl[S, T](internal.ContractMacro.derivedAspect[T, S])

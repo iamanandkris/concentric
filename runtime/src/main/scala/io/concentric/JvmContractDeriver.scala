@@ -58,6 +58,64 @@ object JvmContractDeriver:
   def derive[T](clazz: Class[T]): List[FieldMeta] =
     describe(clazz).flatMap(toFieldMetas)
 
+  /**
+   * Derive [[FieldMeta]] for an aspect class, merging constraint annotations
+   * from the corresponding fields of the source (base) contract class.
+   *
+   * == Inheritance rules ==
+   *
+   *  - **Constraint** annotations (`@nonEmpty`, `@email`, `@min`, `@max`,
+   *    `@minLength`, `@maxLength`, `@pattern`, `@url`, `@uuid`, `@future`,
+   *    `@past`, `@positive`, `@multipleOf`, `@extract`, `@validateWith`) are
+   *    inherited from the matching source field when not already present on the
+   *    aspect field.  Aspect-level annotations always win.
+   *  - **Policy** annotations (`@immutable`, `@internal`, `@reserved`,
+   *    `@masked`) are **never** inherited — the aspect author controls access
+   *    rules independently.
+   *  - Fields present in the aspect but absent from the source receive only
+   *    their own annotations (new fields).
+   *
+   * Aspects are always closed (unknown fields rejected), regardless of the
+   * source contract's openness.
+   *
+   * @param aspectClazz The aspect class (annotated with `@aspectOf`).
+   * @param sourceClazz The source (base) contract class.
+   */
+  def deriveAspect[T, S](aspectClazz: Class[T], sourceClazz: Class[S]): List[FieldMeta] =
+    // Policy annotation class names — never inherited from source.
+    val policyAnnotationNames: Set[String] = Set(
+      classOf[immutable].getName,
+      classOf[internal].getName,
+      classOf[reserved].getName,
+      classOf[masked].getName
+    )
+
+    // Build a map of source field effective annotations by field name.
+    val sourceFields: List[Field]     = getFieldsInOrder(sourceClazz)
+    val sourceParams: List[Parameter] = primaryConstructorParams(sourceClazz)
+    val sourceAnnotsByName: Map[String, List[Annotation]] =
+      sourceFields.zipWithIndex.map { (field, idx) =>
+        field.getName -> effectiveAnnotations(field, sourceParams.lift(idx))
+      }.toMap
+
+    // Describe aspect fields, then merge inherited constraint annotations.
+    describe(aspectClazz).map { node =>
+      sourceAnnotsByName.get(node.name) match
+        case None =>
+          // Field not in source — use aspect annotations as-is.
+          node
+        case Some(sourceAnns) =>
+          // Inherit constraint annotations from source that are:
+          //   (a) not policy annotations, and
+          //   (b) not already declared on the aspect field.
+          val aspectAnnotTypes = node.annotations.map(_.annotationType).toSet
+          val inherited = sourceAnns.filterNot { a =>
+            policyAnnotationNames.contains(a.annotationType.getName) ||
+            aspectAnnotTypes.contains(a.annotationType)
+          }
+          node.copy(annotations = node.annotations ++ inherited)
+    }.flatMap(toFieldMetas)
+
   /** Read `@validateContract` validators declared on the class. */
   def contractValidators[T](clazz: Class[T]): List[T => List[String]] =
     Option(clazz.getAnnotation(classOf[validateContract]))

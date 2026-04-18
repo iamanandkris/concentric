@@ -80,11 +80,12 @@ import scala.jdk.CollectionConverters.*
 class JvmContract[T](
   clazz:       Class[T],
   constructFn: java.util.function.Function[java.util.Map[String, AnyRef], T],
-  isOpen:      Boolean = false
+  isOpen:      Boolean = false,
+  private val overrideFieldMetas: Option[List[FieldMeta]] = None
 ):
 
   private val derivedFields: List[JvmContractDeriver.DerivedField] = JvmContractDeriver.describe(clazz)
-  val fieldMetas: List[FieldMeta] = JvmContractDeriver.derive(clazz)
+  val fieldMetas: List[FieldMeta] = overrideFieldMetas.getOrElse(JvmContractDeriver.derive(clazz))
   private val contractValidators: List[T => List[String]] = JvmContractDeriver.contractValidators(clazz)
 
   // ── Internal ContractImpl wiring ──────────────────────────────────────────
@@ -140,6 +141,62 @@ class JvmContract[T](
     patch:   JvmPatch
   ): ValidationResult[T] =
     validatePatch(current, patch.toMap())
+
+  /**
+   * Apply a pre-validated aspect instance as a typed patch.
+   *
+   * `Optional.empty()` fields in `aspect` are treated as "leave unchanged";
+   * `Optional.of(v)` fields replace the corresponding value in `current`.
+   * The source contract's constraints are re-applied to the merged result.
+   *
+   * @param current        The current stored state as a raw Java map.
+   * @param aspect         The pre-validated aspect instance.
+   * @param aspectContract The [[JvmContract]] used to validate `aspect`
+   *                       (created via [[JvmContract.ofAspect]]).
+   */
+  def validatePatch[A](
+    current:        java.util.Map[String, AnyRef],
+    aspect:         A,
+    aspectContract: JvmContract[A]
+  ): ValidationResult[T] =
+    validatePatch(current, aspectContract.toRaw(aspect))
+
+  /**
+   * Validate a patch payload and immediately apply it to the stored object
+   * in a single call.
+   *
+   * This is the idiomatic two-step PATCH handler collapsed into one line:
+   *
+   * {{{
+   * // Java
+   * ValidationResult<UserPatch> patchResult = patchContract.validate(body);
+   * ValidationResult<User>      result      = userContract.validatePatch(currentRaw, patchResult, patchContract);
+   *
+   * // Kotlin
+   * val patchResult = patchContract.validate(body)
+   * val result      = userContract.validatePatch(currentRaw, patchResult, patchContract)
+   * }}}
+   *
+   * If `patchResult` is invalid its violations are propagated directly —
+   * the source contract is never consulted.  If it is valid the aspect value
+   * is extracted and applied as a patch against `current`.
+   *
+   * @param current        The current stored state as a raw Java map.
+   * @param patchResult    The [[ValidationResult]] returned by
+   *                       `aspectContract.validate(body)`.
+   * @param aspectContract The [[JvmContract]] for the aspect type
+   *                       (created via [[JvmContract.ofAspect]]).
+   */
+  def validatePatch[A](
+    current:        java.util.Map[String, AnyRef],
+    patchResult:    ValidationResult[A],
+    aspectContract: JvmContract[A]
+  ): ValidationResult[T] =
+    import scala.jdk.CollectionConverters.*
+    if !patchResult.isValid then
+      ValidationResult.failure(patchResult.getErrors.asScala.toList)
+    else
+      validatePatch(current, patchResult.getValue.get(), aspectContract)
 
   /**
    * Validate only the fields that are present in a partial raw map.
@@ -580,3 +637,76 @@ object JvmContract:
         JvmContractDeriver.buildPrimaryConstructFn(clazz, fieldOrder)
       }
     new JvmContract(clazz, constructFn, open)
+
+  // ── Aspect factory methods ────────────────────────────────────────────────
+
+  /**
+   * Create a [[JvmContract]] for a **Java record** aspect.
+   *
+   * Constraint annotations (`@email`, `@nonEmpty`, `@min`, etc.) are
+   * inherited from the matching field in `sourceClazz`.  Policy annotations
+   * (`@immutable`, `@internal`, `@reserved`, `@masked`) are never inherited.
+   * The resulting contract is always closed (unknown fields rejected).
+   *
+   * Validates at construction time that `aspectClazz` carries
+   * `@aspectOf(sourceClazz.class)`.
+   *
+   * {{{
+   * JvmContract<UserPatch> patchContract =
+   *     JvmContract.ofAspect(UserPatch.class, User.class);
+   * }}}
+   *
+   * @param aspectClazz  The aspect record class, annotated with `@aspectOf`.
+   * @param sourceClazz  The source contract class.
+   * @throws IllegalArgumentException if the annotation is absent or wrong.
+   */
+  def ofAspect[T, S](aspectClazz: Class[T], sourceClazz: Class[S]): JvmContract[T] =
+    checkAspectOf(aspectClazz, sourceClazz)
+    val metas       = JvmContractDeriver.deriveAspect(aspectClazz, sourceClazz)
+    val constructFn = JvmContractDeriver.buildRecordConstructFn(aspectClazz)
+    new JvmContract(aspectClazz, constructFn, false, Some(metas))
+
+  /**
+   * Create a [[JvmContract]] for a **Kotlin data class** (or Java POJO) aspect.
+   *
+   * Identical to [[ofAspect]] except the constructor is resolved via
+   * `KotlinSupport` or the primary non-synthetic constructor, rather than the
+   * Java record canonical constructor.
+   *
+   * {{{
+   * // Kotlin
+   * val patchContract = JvmContract.ofAspectPrimary(UserPatch::class.java, User::class.java)
+   * }}}
+   *
+   * @param aspectClazz  The aspect data class, annotated with `@aspectOf`.
+   * @param sourceClazz  The source contract class.
+   * @throws IllegalArgumentException if the annotation is absent or wrong.
+   */
+  def ofAspectPrimary[T, S](aspectClazz: Class[T], sourceClazz: Class[S]): JvmContract[T] =
+    checkAspectOf(aspectClazz, sourceClazz)
+    val metas       = JvmContractDeriver.deriveAspect(aspectClazz, sourceClazz)
+    val constructFn = KotlinSupport.info(aspectClazz)
+      .map(_.constructFn)
+      .getOrElse {
+        val fieldOrder = metas.map(_.name)
+        JvmContractDeriver.buildPrimaryConstructFn(aspectClazz, fieldOrder)
+      }
+    new JvmContract(aspectClazz, constructFn, false, Some(metas))
+
+  /**
+   * Verify at construction time that `aspectClazz` is annotated with
+   * `@aspectOf(sourceClazz)`.  Throws [[IllegalArgumentException]] with a
+   * clear message if the annotation is absent or points to a different class.
+   */
+  private def checkAspectOf[T, S](aspectClazz: Class[T], sourceClazz: Class[S]): Unit =
+    val annot = aspectClazz.getAnnotation(classOf[io.concentric.annotations.aspectOf])
+    if annot == null then
+      throw new IllegalArgumentException(
+        s"${aspectClazz.getSimpleName} is not annotated with @aspectOf — " +
+        s"add @aspectOf(${sourceClazz.getSimpleName}.class) to use it as an aspect contract"
+      )
+    if annot.value() != sourceClazz then
+      throw new IllegalArgumentException(
+        s"${aspectClazz.getSimpleName} is @aspectOf[${annot.value().getSimpleName}] " +
+        s"but the given source class is ${sourceClazz.getSimpleName}"
+      )

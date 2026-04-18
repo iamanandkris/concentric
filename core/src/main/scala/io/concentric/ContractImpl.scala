@@ -2,6 +2,7 @@ package io.concentric
 
 import io.concentric.NonEmptyList
 
+
 /**
  * Concrete [[Contract]][T] implementation.
  *

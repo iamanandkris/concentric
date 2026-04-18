@@ -36,6 +36,7 @@ concentric turns an annotated case class (or Java record / Kotlin data class) in
 - [@discriminator — tagged-union wire format](#discriminator--tagged-union-wire-format)
 - [@decodable and @extract — structured string types](#decodable-and-extract--structured-string-types)
 - [Open contracts](#open-contracts)
+- [Aspects — structural variants of a contract](#aspects--structural-variants-of-a-contract)
 - [jsonSchema — derive a JSON Schema document](#jsonschema--derive-a-json-schema-document)
 
 ### Reference
@@ -1239,6 +1240,28 @@ val sanitized = userContract.sanitize(storedRaw)    // strips @internal, masks @
 val shaped    = publicView(sanitized)               // further shapes for the response
 ```
 
+### Nested updates — Monocle
+
+For deeply nested immutable updates on validated `T` values, plain `copy()` works well for one or two levels:
+
+```scala
+user.copy(address = user.address.copy(city = "New York"))
+```
+
+For deeper nesting, concentric types are plain case classes so [Monocle](https://www.optics.dev/Monocle/) works on them out of the box — no extra wiring required:
+
+```scala
+// build.sbt
+libraryDependencies += "dev.optics" %% "monocle-core" % "<version>"
+
+// Usage
+import monocle.syntax.all.*
+
+val updated = company.focus(_.ceo.address.city).replace("New York")
+```
+
+concentric does not provide its own lens API — Monocle covers this use case completely since all contract types are standard case classes.
+
 ---
 
 ## Optional / nullable fields
@@ -1818,6 +1841,346 @@ val result = metadataContract.validate(raw)
 ```
 
 `JvmOpenContract.ofPrimary` always preserves undeclared fields as extras. The older `@contract(open = true)` JVM path remains supported for compatibility, but `JvmOpenContract` is now the preferred API.
+
+</details>
+
+---
+
+## Aspects — structural variants of a contract
+
+An **aspect** is a case class that declares a subset (or variation) of an existing contract's fields. Annotate it with `@aspectOf[Source]` and `derives Contract` — the macro inherits constraint annotations from the matching fields in the source and enforces the relationship at compile time.
+
+The primary use case is typed PATCH endpoints: the aspect declares exactly which fields a caller is allowed to change, with all validation rules carried over automatically from the source contract.
+
+### Declaring an aspect
+
+```scala
+@contract
+case class User(
+  @internal @immutable val id:    Long,
+  @email               val email: String,
+  @nonEmpty @maxLength(100) val name: String,
+  @reserved            val role:  Option[String] = None,
+  @masked              val token: Option[String] = None
+) derives Contract
+
+// PATCH variant — callers can change email and name only.
+// @email, @nonEmpty, @maxLength(100) are inherited from User.
+// id, role, token are excluded by omission.
+@aspectOf[User]
+case class UserPatch(
+  val email: Option[String] = None,
+  val name:  Option[String] = None
+) derives Contract
+```
+
+### What is and isn't inherited
+
+**Constraint annotations** (`@email`, `@nonEmpty`, `@min`, `@max`, `@maxLength`, `@pattern`, etc.) are inherited from the matching source field. An annotation declared on the aspect field overrides the corresponding one from the source.
+
+**Policy annotations** (`@reserved`, `@internal`, `@immutable`, `@masked`) are **not** inherited. The aspect author decides access rules from scratch. This lets you write a privileged variant that accepts a field the base contract marks as `@reserved`:
+
+```scala
+// Admin variant — role is @reserved in User but freely accepted here.
+@aspectOf[User]
+case class AdminPatch(
+  val email: Option[String] = None,
+  val name:  Option[String] = None,
+  val role:  Option[String] = None   // @reserved NOT inherited — intentional
+) derives Contract
+```
+
+### New fields not present in the source
+
+An aspect can declare fields that do not exist in the source at all. They use only their own annotations:
+
+```scala
+// Registration form — confirmPassword has no match in User; @nonEmpty is its own.
+@aspectOf[User]
+case class UserRegistration(
+  val email:                       Option[String] = None,  // @email inherited
+  val name:                        Option[String] = None,  // @nonEmpty/@maxLength(100) inherited
+  @nonEmpty val confirmPassword:   Option[String] = None   // new — not in User
+) derives Contract
+```
+
+### Applying an aspect as a typed patch
+
+`Contract[T].validatePatch` has a typed overload that accepts an aspect value directly. Both the aspect contract and the compile-time proof that `A` is an `@aspectOf[T]` are resolved implicitly:
+
+```scala
+val userContract  = summon[Contract[User]]
+val patchContract = summon[Contract[UserPatch]]
+
+def handlePatch(currentRaw: RawObject, requestBody: RawObject) =
+  for
+    patch   <- patchContract.validate(requestBody)   // validate what the caller sent
+    updated <- userContract.validatePatch(currentRaw, patch)  // apply against stored state
+  yield updated
+```
+
+The `Contract[UserPatch]` and `IsAspectOf[User, UserPatch]` are both found implicitly. Passing a type that does not carry `@aspectOf[User]` is a **compile error**:
+
+```scala
+// Compile error — AspectOrder is not an @aspectOf[User]
+userContract.validatePatch(currentRaw, someOrderPatch)
+```
+
+Unknown fields in the request body are **always rejected** by the aspect regardless of the source contract's openness — aspects are closed validators by default.
+
+### Aspect of a closed base contract
+
+When the source derives plain `Contract`, the aspect inherits constraints normally. Fields sent in a request that are not declared in the aspect are rejected:
+
+```scala
+@contract
+case class Order(
+  @nonEmpty val ref:    String,
+  @min(1)   val qty:    Int,
+  @max(999) val weight: Double
+) derives Contract
+
+// Only ref and qty can be patched; weight is excluded.
+// @nonEmpty inherited on ref, @min(1) inherited on qty.
+@aspectOf[Order]
+case class OrderPatch(
+  val ref: Option[String] = None,
+  val qty: Option[Int]    = None
+) derives Contract
+
+val orderPatchContract = summon[Contract[OrderPatch]]
+
+orderPatchContract.validate(Map("qty" -> 5))
+// → Right(OrderPatch(None, Some(5)))
+
+orderPatchContract.validate(Map("qty" -> 0))
+// → Left: ConstraintFailed("min") at "qty"   — @min(1) inherited
+
+orderPatchContract.validate(Map("qty" -> 5, "weight" -> 1.2))
+// → Left: UnknownField at "weight"            — aspect is closed
+```
+
+### Aspect of an open base contract
+
+When the source derives `OpenContract` — meaning it accepts arbitrary extra fields alongside its declared ones — the aspect still validates its own fields independently and rejects anything undeclared in the aspect itself:
+
+```scala
+case class Product(
+  @nonEmpty val sku:   String,
+  @min(0)   val price: Double
+) derives OpenContract   // source accepts unknown keys
+
+@aspectOf[Product]
+case class ProductPatch(
+  val sku:   Option[String] = None,  // @nonEmpty inherited
+  val price: Option[Double] = None   // @min(0) inherited
+) derives Contract
+
+val productPatchContract = summon[Contract[ProductPatch]]
+
+productPatchContract.validate(Map("sku" -> "ABC-123", "price" -> 9.99))
+// → Right(ProductPatch(Some("ABC-123"), Some(9.99)))
+
+productPatchContract.validate(Map("sku" -> ""))
+// → Left: ConstraintFailed("nonEmpty")        — constraint still inherited
+
+productPatchContract.validate(Map("sku" -> "ABC", "extra" -> "x"))
+// → Left: UnknownField at "extra"             — aspect is closed even though source is open
+```
+
+The source's openness is irrelevant to the aspect's validation behaviour. The source `OpenContract` describes what can be *stored*; the aspect describes what a *caller is allowed to change*. Those are separate concerns.
+
+<details>
+<summary>Java</summary>
+
+Annotate the aspect record with `@aspectOf(Source.class)` and create its contract with `JvmContract.ofAspect`. Constraint annotations are inherited from the source record; policy annotations (`@immutable`, `@internal`, `@reserved`, `@masked`) are not.
+
+```java
+import io.concentric.annotations.*;
+import io.concentric.annotations.aspectOf;   // explicit import avoids Scala name clash
+import io.concentric.JvmContract;
+import io.concentric.ValidationResult;
+import java.util.Optional;
+
+@contract
+public record User(
+    @immutable @internal            Long            id,
+    @nonEmpty  @maxLength(100)      String          name,
+    @email                          String          email,
+    @reserved                       Optional<String> role
+) {}
+
+// PATCH variant — name and email only; @nonEmpty/@maxLength(100)/@email inherited.
+// id is excluded by omission; role is excluded by omission (@reserved not inherited).
+@aspectOf(User.class)
+public record UserPatch(
+    Optional<String> name,
+    Optional<String> email
+) {}
+
+// Admin variant — role is @reserved in User but freely accepted here.
+@aspectOf(User.class)
+public record AdminPatch(
+    Optional<String> name,
+    Optional<String> email,
+    Optional<String> role    // new field — not subject to @reserved
+) {}
+```
+
+```java
+static final JvmContract<User>      userContract       = JvmContract.ofRecord(User.class);
+static final JvmContract<UserPatch> patchContract      = JvmContract.ofAspect(UserPatch.class, User.class);
+static final JvmContract<AdminPatch> adminPatchContract = JvmContract.ofAspect(AdminPatch.class, User.class);
+```
+
+`ofAspect` validates at construction time that `@aspectOf(User.class)` is present and that the source matches — it throws `IllegalArgumentException` immediately if the annotation is absent or points to a different class.
+
+**Typed patch handler:**
+
+```java
+public ValidationResult<User> handlePatch(
+    Map<String, Object> currentRaw,
+    Map<String, Object> requestBody
+) {
+    // Step 1 — validate the incoming patch payload:
+    ValidationResult<UserPatch> patchResult = patchContract.validate(requestBody);
+
+    // Step 2 — apply against the stored object.
+    // If patchResult is invalid its violations are propagated directly.
+    return userContract.validatePatch(currentRaw, patchResult, patchContract);
+}
+```
+
+`Optional.empty()` fields in `UserPatch` are treated as "leave unchanged". `Optional.of(v)` fields replace the corresponding value in `currentRaw`. The source contract's constraints are re-applied to the merged result.
+
+**Constraint override:**
+
+Redeclare an annotation on the aspect field to tighten (or relax) the inherited rule:
+
+```java
+@aspectOf(User.class)
+public record UserPatchStrict(
+    @maxLength(50) Optional<String> name,   // tighter than User's @maxLength(100)
+    Optional<String>                email   // @email still inherited
+) {}
+```
+
+**Aspect of an open contract:**
+
+```java
+@contract(open = true)   // or use JvmOpenContract on the source side
+public record Config(
+    @nonEmpty String key,
+    String value
+) {}
+
+@aspectOf(Config.class)
+public record ConfigPatch(
+    Optional<String> key,    // @nonEmpty inherited
+    Optional<String> value
+) {}
+
+JvmContract<ConfigPatch> configPatchContract = JvmContract.ofAspect(ConfigPatch.class, Config.class);
+
+// Aspect is always closed — unknown fields rejected even though source is open:
+configPatchContract.validate(Map.of("key", "k", "extra", "x"));
+// → invalid: UNKNOWN at "extra"
+```
+
+For Kotlin data class aspects use `JvmContract.ofAspectPrimary` instead of `ofAspect`.
+
+</details>
+
+<details>
+<summary>Kotlin</summary>
+
+Annotate the data class with `@aspectOf(Source::class.java)` and create its contract with `JvmContract.ofAspectPrimary`. The annotation placement rules are the same as for regular `@contract` data classes — use `@field:` to route annotations to the JVM backing field, though `JvmContractDeriver` checks both the field and the constructor parameter.
+
+```kotlin
+import io.concentric.annotations.*
+import io.concentric.annotations.aspectOf
+import io.concentric.JvmContract
+import java.util.Optional
+
+@contract
+data class User(
+    @field:immutable @field:internal val id:    Long,
+    @field:nonEmpty  @field:maxLength(100) val name: String,
+    @field:email                     val email: String,
+    @field:reserved                  val role:  Optional<String> = Optional.empty()
+)
+
+// PATCH variant — name and email only; constraints inherited.
+@aspectOf(User::class.java)
+data class UserPatch(
+    val name:  Optional<String> = Optional.empty(),  // @nonEmpty @maxLength(100) inherited
+    val email: Optional<String> = Optional.empty()   // @email inherited
+)
+
+// Admin variant — role can be freely set (no @reserved inherited).
+@aspectOf(User::class.java)
+data class AdminPatch(
+    val name:  Optional<String> = Optional.empty(),
+    val email: Optional<String> = Optional.empty(),
+    val role:  Optional<String> = Optional.empty()
+)
+```
+
+```kotlin
+val userContract       = JvmContract.ofPrimary(User::class.java)
+val patchContract      = JvmContract.ofAspectPrimary(UserPatch::class.java, User::class.java)
+val adminPatchContract = JvmContract.ofAspectPrimary(AdminPatch::class.java, User::class.java)
+```
+
+**Typed patch handler:**
+
+```kotlin
+fun handlePatch(
+    currentRaw:  Map<String, Any>,
+    requestBody: Map<String, Any>
+): ValidationResult<User> {
+    // Step 1 — validate the incoming patch payload:
+    val patchResult = patchContract.validate(requestBody)
+
+    // Step 2 — apply against the stored object.
+    // If patchResult is invalid its violations are propagated directly.
+    return userContract.validatePatch(currentRaw, patchResult, patchContract)
+}
+```
+
+**Constraint override:**
+
+```kotlin
+@aspectOf(User::class.java)
+data class UserPatchStrict(
+    @field:maxLength(50) val name:  Optional<String> = Optional.empty(), // tighter
+    val email: Optional<String> = Optional.empty()                        // @email inherited
+)
+
+val strictContract = JvmContract.ofAspectPrimary(UserPatchStrict::class.java, User::class.java)
+```
+
+**Aspect of an open contract:**
+
+```kotlin
+@contract
+data class Config(
+    @field:nonEmpty val key:   String,
+    val value: String
+)
+
+@aspectOf(Config::class.java)
+data class ConfigPatch(
+    val key:   Optional<String> = Optional.empty(),  // @nonEmpty inherited
+    val value: Optional<String> = Optional.empty()
+)
+
+val configPatchContract = JvmContract.ofAspectPrimary(ConfigPatch::class.java, Config::class.java)
+
+// Aspect is always closed — unknown fields rejected even though source is open:
+configPatchContract.validate(mapOf("key" to "k", "extra" to "x"))
+// → invalid: UNKNOWN at "extra"
+```
 
 </details>
 
