@@ -4,6 +4,9 @@ A compile-time, annotation-driven validation and contract library for Scala 3, w
 
 concentric turns an annotated case class (or Java record / Kotlin data class) into a **Contract** — a reusable object that validates, sanitizes, patches, and serialises structured data. Every operation accumulates *all* violations rather than short-circuiting on the first failure, and every violation carries a structured code that is easy to map to HTTP status codes or API error envelopes.
 
+> **Acknowledgements**
+> concentric is a ground-up rewrite inspired by [dsentric](https://github.com/HigherState/dsentric) by [HigherState](https://github.com/HigherState), which pioneered the idea of data contract patterns, validation, lenses, and query generation for dynamic data structures in Scala. dsentric is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
 ---
 
 ## Table of Contents
