@@ -27,43 +27,56 @@ import java.lang.annotation.Target;
  * <p>Aspects are always <em>closed</em>: unknown input keys are rejected regardless
  * of whether the source contract is open or closed.
  *
- * <p>Example (Java record PATCH):
+ * <h2>Inheritance modes</h2>
+ *
+ * <p>The {@link #inherit()} attribute controls whether exhaustiveness checking is
+ * applied to source fields:
+ *
+ * <ul>
+ *   <li>{@link InheritMode#EXPLICIT} (default) — opt-in: you declare exactly the
+ *       fields you want.  Source fields not mentioned are silently absent from the
+ *       aspect.  No validation that all source fields were considered.</li>
+ *   <li>{@link InheritMode#ALL} — exhaustive: every source field must either be
+ *       declared in the aspect constructor OR listed in {@link #exclude()}.  If a
+ *       new field is added to the source contract, the aspect fails at startup
+ *       until you decide whether to include or exclude it.  This prevents silent
+ *       schema drift.</li>
+ * </ul>
+ *
+ * <p>The constructor is <em>not</em> affected by {@code inherit = ALL}: the aspect
+ * class still declares exactly the fields it wants.  {@code inherit = ALL} only
+ * adds a validation check that no source field was silently forgotten.
+ *
+ * <h2>Example — EXPLICIT mode (default)</h2>
  * <pre>
  * {@literal @}contract
  * public record User(
  *     {@literal @}immutable            Long   id,
  *     {@literal @}nonEmpty             String name,
- *     {@literal @}email                String email
+ *     {@literal @}email                String email,
+ *                                      int    age
  * ) {}
  *
  * {@literal @}aspectOf(User.class)
  * public record UserPatch(
  *     Optional{@literal <}String{@literal >} name,   // {@literal @}nonEmpty inherited
  *     Optional{@literal <}String{@literal >} email   // {@literal @}email inherited
+ *     // id and age silently absent — no error
  * ) {}
- *
- * JvmContract{@literal <}User{@literal >}      userContract  = JvmContract.ofRecord(User.class);
- * JvmContract{@literal <}UserPatch{@literal >} patchContract = JvmContract.ofAspect(UserPatch.class, User.class);
- *
- * // Validate a PATCH request:
- * var raw = Map.of("email", "new{@literal @}example.com");
- * ValidationResult{@literal <}UserPatch{@literal >} result = patchContract.validate(raw);
- *
- * // Apply the patch to the stored object:
- * if (result.isValid()) {
- *     userContract.validatePatch(currentRaw, result.getValue().get(), patchContract);
- * }
  * </pre>
  *
- * <p>Example (Kotlin data class PATCH):
+ * <h2>Example — inherit = ALL mode</h2>
  * <pre>
- * {@literal @}aspectOf(User::class.java)
- * data class UserPatch(
- *     val name:  Optional{@literal <}String{@literal >} = Optional.empty(),  // {@literal @}nonEmpty inherited
- *     val email: Optional{@literal <}String{@literal >} = Optional.empty()   // {@literal @}email inherited
- * )
- *
- * val patchContract = JvmContract.ofAspect(UserPatch::class.java, User::class.java)
+ * {@literal @}aspectOf(value = User.class,
+ *           inherit = aspectOf.InheritMode.ALL,
+ *           exclude = {"age"})        // age intentionally omitted
+ * public record UserPublicProfile(
+ *     Long   id,    // {@literal @}immutable inherited (policy — but declared here)
+ *     String name,  // {@literal @}nonEmpty inherited
+ *     String email  // {@literal @}email inherited
+ *     // age excluded via exclude list — startup validation passes
+ *     // adding a new field to User without updating here causes a startup error
+ * ) {}
  * </pre>
  *
  * @see io.concentric.JvmContract#ofAspect(Class, Class)
@@ -71,8 +84,41 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
 public @interface aspectOf {
+
+    /**
+     * Controls whether exhaustiveness checking is applied to source fields.
+     */
+    enum InheritMode {
+        /**
+         * Default: opt-in field selection.  Source fields not mentioned in
+         * the aspect are silently absent — no exhaustiveness check.
+         */
+        EXPLICIT,
+        /**
+         * Exhaustive mode: every source field must be either declared in the
+         * aspect constructor or listed in {@link aspectOf#exclude()}.  Startup
+         * fails if any source field is silently forgotten.
+         */
+        ALL
+    }
+
     /**
      * The source contract class that this aspect is a structural variant of.
      */
     Class<?> value();
+
+    /**
+     * Inheritance mode.  Use {@link InheritMode#ALL} to enable exhaustiveness
+     * checking.  Defaults to {@link InheritMode#EXPLICIT}.
+     */
+    InheritMode inherit() default InheritMode.EXPLICIT;
+
+    /**
+     * Source field names to explicitly exclude when {@link #inherit()} is
+     * {@link InheritMode#ALL}.  Each name must exist in the source contract;
+     * specifying a non-existent name is an error.  This attribute is only
+     * valid when {@code inherit = InheritMode.ALL}; specifying it with
+     * {@code EXPLICIT} mode causes a startup error.
+     */
+    String[] exclude() default {};
 }

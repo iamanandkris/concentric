@@ -90,6 +90,17 @@ object JvmContractDeriver:
       classOf[masked].getName
     )
 
+    // Read @aspectOf(inherit, exclude) from the aspect class.
+    val aspectAnn    = aspectClazz.getAnnotation(classOf[io.concentric.annotations.aspectOf])
+    val inheritAll   = aspectAnn != null && aspectAnn.inherit() == io.concentric.annotations.aspectOf.InheritMode.ALL
+    val excludeNames = if (aspectAnn != null) aspectAnn.exclude().toSet else Set.empty[String]
+
+    // Error if exclude is specified without inherit = ALL.
+    if (!inheritAll && excludeNames.nonEmpty)
+      throw new IllegalArgumentException(
+        s"@aspectOf on ${aspectClazz.getName}: exclude requires inherit = ALL"
+      )
+
     // Build a map of source field effective annotations by field name.
     val sourceFields: List[Field]     = getFieldsInOrder(sourceClazz)
     val sourceParams: List[Parameter] = primaryConstructorParams(sourceClazz)
@@ -98,8 +109,34 @@ object JvmContractDeriver:
         field.getName -> effectiveAnnotations(field, sourceParams.lift(idx))
       }.toMap
 
-    // Describe aspect fields, then merge inherited constraint annotations.
-    describe(aspectClazz).map { node =>
+    // Describe aspect fields (the fields the aspect actually declares in its constructor).
+    val aspectNodes = describe(aspectClazz)
+
+    // inherit = ALL exhaustiveness checks.
+    if (inheritAll)
+      val aspectFieldNames = aspectNodes.map(_.name).toSet
+      val sourceFieldNames = sourceAnnotsByName.keySet
+
+      // 1. Every exclude name must exist in source.
+      excludeNames.foreach { name =>
+        if (!sourceFieldNames.contains(name))
+          throw new IllegalArgumentException(
+            s"@aspectOf(inherit = ALL) on ${aspectClazz.getName}: " +
+            s"exclude field '$name' does not exist in source contract ${sourceClazz.getName}"
+          )
+      }
+
+      // 2. Every source field must be either declared in aspect or excluded.
+      val unaccounted = sourceFieldNames -- aspectFieldNames -- excludeNames
+      if (unaccounted.nonEmpty)
+        throw new IllegalArgumentException(
+          s"@aspectOf(inherit = ALL) on ${aspectClazz.getName}: " +
+          s"source field(s) [${unaccounted.toSeq.sorted.mkString(", ")}] from ${sourceClazz.getName} " +
+          s"are neither declared in the aspect nor listed in exclude"
+        )
+
+    // Merge inherited constraint annotations into aspect nodes.
+    val mergedNodes = aspectNodes.map { node =>
       sourceAnnotsByName.get(node.name) match
         case None =>
           // Field not in source — use aspect annotations as-is.
@@ -114,7 +151,15 @@ object JvmContractDeriver:
             aspectAnnotTypes.contains(a.annotationType)
           }
           node.copy(annotations = node.annotations ++ inherited)
-    }.flatMap(toFieldMetas)
+    }
+
+    // Error if the resulting field list is empty.
+    if (mergedNodes.isEmpty)
+      throw new IllegalArgumentException(
+        s"@aspectOf on ${aspectClazz.getName}: aspect has no fields after applying exclude"
+      )
+
+    mergedNodes.flatMap(toFieldMetas)
 
   /** Read `@validateContract` validators declared on the class. */
   def contractValidators[T](clazz: Class[T]): List[T => List[String]] =

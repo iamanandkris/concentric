@@ -551,6 +551,178 @@ final class CrossFeatureSpec extends SpecBase:
           finalOut.get("age")      == Some(25)     // unchanged
         )
       }
+    ),
+
+    // ── Draft × aspectOf (inherit = ALL) ─────────────────────────────────────
+    //
+    // AspectOrderFull uses inherit = true with no exclusions — all three source
+    // fields (ref, qty, weight) are declared as Option[T], each with an inherited
+    // constraint.  These tests confirm that the Draft/validatePartial workflow
+    // integrates correctly with inherit = ALL aspects:
+    //
+    //  - partial input is accepted (Option fields are genuinely optional mid-draft)
+    //  - inherited constraints still fire when a present value is invalid
+    //  - multi-step merge+finalize assembles a valid object
+    //  - validatePatch on the SOURCE contract still works while the ASPECT is used
+    //    for the creation path (the two contracts coexist without interfering)
+
+    suite("Draft × aspectOf (inherit = ALL)")(
+
+      test("validatePartial on inherit=ALL aspect accepts partial input (only ref provided)") {
+        // AspectOrderFull has all Option fields — providing only ref must succeed.
+        val aspectOrderFullContract = summon[Contract[AspectOrderFull]]
+        for draft <- aspectOrderFullContract.validatePartial(Map("ref" -> "ORD-001"))
+        yield assertTrue(draft.toMap.get("ref") == Some("ORD-001"))
+      },
+
+      test("validatePartial on inherit=ALL aspect catches inherited constraint violation") {
+        // qty has inherited @min(1) — sending 0 must fail even in a partial batch.
+        val aspectOrderFullContract = summon[Contract[AspectOrderFull]]
+        for result <- aspectOrderFullContract.validatePartial(Map("qty" -> 0)).flip
+        yield assertTrue(
+          result.violations.toList.exists(v =>
+            v.path == FieldPath("qty") &&
+            v.code == ViolationCode.ConstraintFailed("min")
+          )
+        )
+      },
+
+      test("multi-step draft merge+finalize on inherit=ALL aspect produces valid object") {
+        // Simulate a two-step form: first step provides ref+qty, second adds weight.
+        val aspectOrderFullContract = summon[Contract[AspectOrderFull]]
+        for
+          draft1 <- aspectOrderFullContract.validatePartial(Map("ref" -> "ORD-002", "qty" -> 5))
+          draft2 <- aspectOrderFullContract.validatePartial(Map("weight" -> 12.5))
+          order  <- draft1.merge(draft2).finalize(aspectOrderFullContract)
+        yield assertTrue(
+          order.ref    == Some("ORD-002"),
+          order.qty    == Some(5),
+          order.weight == Some(12.5)
+        )
+      },
+
+      test("inherit=ALL draft finalize rejects inherited constraint on merged value") {
+        // First step passes — weight 999.9 is an individually valid Double.
+        // But @max(999) inherited from AspectOrder must reject it at finalization.
+        val aspectOrderFullContract = summon[Contract[AspectOrderFull]]
+        for
+          draft1 <- aspectOrderFullContract.validatePartial(Map("ref" -> "ORD-003", "qty" -> 2))
+          draft2 <- aspectOrderFullContract.validatePartial(Map("weight" -> 1000.0))
+          result <- draft1.merge(draft2).finalize(aspectOrderFullContract).flip
+        yield assertTrue(
+          result.violations.toList.exists(v =>
+            v.path == FieldPath("weight") &&
+            v.code == ViolationCode.ConstraintFailed("max")
+          )
+        )
+      },
+
+      test("source contract validatePatch is unaffected when aspect contract coexists") {
+        // Using AspectOrderFull (inherit=ALL) for the creation path does not
+        // interfere with validatePatch on the source AspectOrder contract.
+        val aspectOrderContract     = summon[Contract[AspectOrder]]
+        val aspectOrderFullContract = summon[Contract[AspectOrderFull]]
+        val current: RawObject = Map("ref" -> "ORD-004", "qty" -> 3, "weight" -> 10.0)
+        for
+          // aspect contract: create a draft, finalize OK
+          draft <- aspectOrderFullContract.validatePartial(Map("ref" -> "ORD-005", "qty" -> 1, "weight" -> 5.0))
+          _     <- draft.finalize(aspectOrderFullContract)
+          // source contract: patch current — independent of the aspect
+          order <- aspectOrderContract.validatePatch(current, Map("qty" -> 7))
+        yield assertTrue(order.qty == 7, order.ref == "ORD-004")
+      }
+    ),
+
+    // ── View × aspectOf (inherit = ALL) ──────────────────────────────────────
+    //
+    // AspectUserPublicProfile uses inherit = true, exclude = Seq("role","token")
+    // — fields are id (Long), email (String), name (String).
+    // AspectUserProfileStrict is the tighter variant with @maxLength(20) on name.
+    //
+    // These tests confirm:
+    //  - View.omit on an inherit=ALL aspect output correctly removes the field
+    //  - View.mask on an inherit=ALL aspect output correctly masks the field
+    //  - View chaining respects order on aspect-validated output
+    //  - A valid inherit=ALL validation result feeds into a View pipeline unchanged
+
+    suite("View × aspectOf (inherit = ALL)")(
+
+      test("View.omit on inherit=ALL aspect output removes the named field") {
+        val publicProfileContract = summon[Contract[AspectUserPublicProfile]]
+        val raw: RawObject        = Map("id" -> 1L, "name" -> "Alice", "email" -> "alice@example.com")
+        for profile <- publicProfileContract.validate(raw)
+        yield
+          val viewOut = View[AspectUserPublicProfile].omit(_.name)(raw)
+          assertTrue(
+            !viewOut.contains("name"),
+            viewOut.get("id")    == Some(1L),
+            viewOut.get("email") == Some("alice@example.com")
+          )
+      },
+
+      test("View.mask on inherit=ALL aspect output masks the named field") {
+        val publicProfileContract = summon[Contract[AspectUserPublicProfile]]
+        val raw: RawObject        = Map("id" -> 1L, "name" -> "Alice", "email" -> "alice@example.com")
+        for _ <- publicProfileContract.validate(raw)
+        yield
+          val viewOut = View[AspectUserPublicProfile].mask(_.email)(raw)
+          assertTrue(
+            viewOut.get("email") == Some("***"),
+            viewOut.get("name")  == Some("Alice")
+          )
+      },
+
+      test("View chaining respects order on inherit=ALL aspect output") {
+        // omit(name) then mask(email) — name gone, email masked, id survives
+        val publicProfileContract = summon[Contract[AspectUserPublicProfile]]
+        val raw: RawObject        = Map("id" -> 42L, "name" -> "Bob", "email" -> "bob@example.com")
+        for _ <- publicProfileContract.validate(raw)
+        yield
+          val viewOut = View[AspectUserPublicProfile].omit(_.name).mask(_.email)(raw)
+          assertTrue(
+            !viewOut.contains("name"),
+            viewOut.get("email") == Some("***"),
+            viewOut.get("id")    == Some(42L)
+          )
+      },
+
+      test("validated output of inherit=ALL aspect feeds into View correctly") {
+        // Validate with the strict profile (tighter @maxLength(20)) — result is valid.
+        // Then apply a View to the same raw map; the constraint-tightening on the
+        // aspect must not interfere with the View's independent field projection.
+        val strictProfileContract = summon[Contract[AspectUserProfileStrict]]
+        val raw: RawObject        = Map("id" -> 5L, "email" -> "carol@example.com", "name" -> "Carol")
+        for profile <- strictProfileContract.validate(raw)
+        yield
+          val viewOut = View[AspectUserProfileStrict].omit(_.id)(raw)
+          assertTrue(
+            !viewOut.contains("id"),
+            viewOut.get("name")  == Some("Carol"),
+            viewOut.get("email") == Some("carol@example.com"),
+            profile.id    == 5L,
+            profile.name  == "Carol",
+            profile.email == "carol@example.com"
+          )
+      },
+
+      test("inherit=ALL aspect validation failure does not affect View output") {
+        // Validation fails (name too long for strict profile @maxLength(20)), but
+        // View.omit is an independent transformation — it still produces its output
+        // correctly from the raw map regardless of what validate returns.
+        val strictProfileContract = summon[Contract[AspectUserProfileStrict]]
+        val raw: RawObject        = Map("id" -> 9L, "email" -> "dave@example.com", "name" -> ("x" * 25))
+        for result <- strictProfileContract.validate(raw).flip
+        yield
+          val viewOut = View[AspectUserProfileStrict].omit(_.id)(raw)
+          assertTrue(
+            result.violations.toList.exists(v =>
+              v.path == FieldPath("name") &&
+              v.code == ViolationCode.ConstraintFailed("maxLength")
+            ),
+            !viewOut.contains("id"),      // View still works
+            viewOut.get("name") == Some("x" * 25)  // raw value, unmodified by validation
+          )
+      }
     )
   )
 

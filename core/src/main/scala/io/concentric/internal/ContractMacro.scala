@@ -302,6 +302,110 @@ object ContractMacro:
         case PolyType(_, _, MethodType(_, ts, _)) => ts
         case _ => report.errorAndAbort(s"'${tSym.name}': unexpected constructor type shape")
 
+    // 4. Read inherit/exclude args from the @aspectOf annotation on T.
+    //
+    // The annotation term has the shape:
+    //   Apply(TypeApply(Select(New(<aspectOf type>), "<init>"), ...), List(<args>))
+    // where args may include NamedArg("inherit", Literal(BooleanConstant(b))) and
+    // NamedArg("exclude", <Seq expression>).
+    def collectApplyArgs(term: Term): List[Term] =
+      term match
+        case Apply(inner, args)  => collectApplyArgs(inner) ++ args
+        case TypeApply(inner, _) => collectApplyArgs(inner)
+        case _                   => Nil
+
+    def collectStrings(t: Term): List[String] = t match
+      case Literal(StringConstant(s)) => List(s)
+      case Apply(_, args)             => args.flatMap(collectStrings)
+      case TypeApply(inner, _)        => collectStrings(inner)
+      case Typed(inner, _)            => collectStrings(inner)
+      case Inlined(_, _, inner)       => collectStrings(inner)
+      case Repeated(elems, _)         => elems.flatMap(collectStrings)
+      case Block(_, expr)             => collectStrings(expr)
+      case _                          => Nil
+
+    val aspectAnnotOpt: Option[Term] =
+      tSym.annotations.find { a =>
+        a.tpe match
+          case AppliedType(fn, List(_)) => fn.typeSymbol.fullName == "io.concentric.aspectOf"
+          case _                        => false
+      }
+
+    val (inheritAll: Boolean, excludeNames: List[String]) =
+      aspectAnnotOpt.map { annot =>
+        // When only some params are explicit (others use defaults), Scala 3 may
+        // emit the annotation as a Block with let-bindings, e.g.:
+        //   { val exclude$1 = Seq("x"); new aspectOf[S](defaultMethod, exclude = exclude$1) }
+        // We unwrap the Block, build a name→term map from its ValDefs, and
+        // resolve Idents through it before extracting inherit/exclude values.
+        val (bindings: Map[String, Term], innerTerm: Term) = annot match
+          case Block(stmts, expr) =>
+            val defs = stmts.flatMap {
+              case vd: ValDef => vd.rhs.toList.map(rhs => vd.name -> rhs)
+              case _          => Nil
+            }.toMap
+            (defs, expr)
+          case other => (Map.empty[String, Term], other)
+
+        def resolve(t: Term): Term = t match
+          case Ident(name) => bindings.getOrElse(name, t)
+          case _           => t
+
+        val allArgs = collectApplyArgs(innerTerm)
+
+        // Named args take priority; fall back to positional for any not found.
+        // Resolve Idents through the let-bindings before extracting values.
+        val namedInherit: Option[Boolean] = allArgs.collectFirst {
+          case NamedArg("inherit", v) => resolve(v) match
+            case Literal(BooleanConstant(b)) => b
+            case _                           => false
+        }
+        val namedExclude: Option[List[String]] = allArgs.collectFirst {
+          case NamedArg("exclude", v) => collectStrings(resolve(v))
+        }
+        // Positional args (not wrapped in NamedArg), resolved through bindings.
+        // Identify inherit by BooleanConstant literal; everything else is exclude.
+        val positional = allArgs.flatMap {
+          case NamedArg(_, _) => None
+          case other          => Some(resolve(other))
+        }
+        val inherit = namedInherit.orElse(
+          positional.collectFirst { case Literal(BooleanConstant(b)) => b }
+        ).getOrElse(false)
+        val exclude = namedExclude.orElse(
+          positional.find { case Literal(BooleanConstant(_)) => false; case _ => true }
+                    .map(collectStrings)
+        ).getOrElse(Nil)
+        (inherit, exclude)
+      }.getOrElse((false, Nil))
+
+    // 4a. `exclude` without `inherit = true` is an error.
+    if excludeNames.nonEmpty && !inheritAll then
+      report.errorAndAbort(
+        s"@aspectOf[${sSym.name}] on '${tSym.name}': `exclude` is only valid when `inherit = true`. " +
+        s"Remove the `exclude` list or add `inherit = true`."
+      )
+
+    if inheritAll then
+      val sFieldNames = sParamAnnots.keySet
+      // 4b. Exclude names must all exist in the source.
+      val badExclude = excludeNames.filterNot(sFieldNames.contains)
+      if badExclude.nonEmpty then
+        report.errorAndAbort(
+          s"@aspectOf[${sSym.name}] on '${tSym.name}': `exclude` contains names not found in source: " +
+          badExclude.sorted.mkString(", ")
+        )
+      // 4c. Every source field must be either declared in T or listed in exclude.
+      val tFieldNames = tParams.map(_.name).toSet
+      val unaccounted = sFieldNames -- tFieldNames -- excludeNames.toSet
+      if unaccounted.nonEmpty then
+        report.errorAndAbort(
+          s"@aspectOf[${sSym.name}] on '${tSym.name}' uses `inherit = true` but the following " +
+          s"source fields are neither declared in the aspect nor listed in `exclude`: " +
+          unaccounted.toList.sorted.mkString(", ") +
+          s". Add them to the aspect class or include them in `exclude`."
+        )
+
     // 4. Build FieldMeta list.
     //
     // For fields that exist in S: inherit S's constraint annotations; T's own
@@ -310,13 +414,8 @@ object ContractMacro:
     // inherited — the aspect author explicitly controls access.
     //
     // For fields that do NOT exist in S: accepted as fresh fields using only
-    // their own annotations (matching original dsentric Aspect behaviour where
-    // new fields declared in the aspect body are simply added alongside the
-    // inherited ones).
-    //
-    // Note: there is intentionally no compile error for fields absent from S.
-    // This allows patterns like `confirmPassword` (request-only, not stored)
-    // to live alongside inherited source fields.
+    // their own annotations.  When inherit = true, we've already verified above
+    // that every source field is accounted for; extra fields on T are allowed.
     val policyAnnotSyms: Set[Symbol] = Set(
       TypeRepr.of[annotations.reserved].typeSymbol,
       TypeRepr.of[annotations.internal].typeSymbol,

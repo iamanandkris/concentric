@@ -70,7 +70,8 @@ lazy val runtime = project
   .settings(
     // Conditionally exclude Java record test sources when running on JVM < 16.
     // Records are Java 16+ syntax; on older JVMs those files are skipped and
-    // only the plain-Java Kotlin-sim tests and all Scala specs are compiled.
+    // only the plain-Java Kotlin-sim tests and new JvmView/Draft/Filter specs
+    // (which use TestKotlinSimUser) are compiled.
     // On JVM 16+ (including the developer's Java 25) all sources are included.
     Test / unmanagedSources / excludeFilter := {
       val raw = System.getProperty("java.version")
@@ -78,12 +79,21 @@ lazy val runtime = project
         if (raw.startsWith("1.")) raw.split("\\.")(1).toInt
         else                      raw.split("\\.")(0).toInt
       }.getOrElse(0)
-      // On JVM < 16 exclude the Java record sources and the Scala spec that
-      // references them.  KotlinInteropSpec uses only plain Java classes and
-      // compiles on any JVM.  On JVM 16+ (dev machine) all sources compile.
+      // On JVM < 16: exclude ALL TestJvm*.java files (records need Java 16+)
+      // and the Scala specs that reference them.
+      // TestKotlin*.java files are plain Java classes — they compile on JVM 11.
+      // JvmViewSpec, JvmDraftSpec, JvmFilterSpec use only TestKotlinSimUser
+      // and are NOT excluded.
       if (jvmMajor < 16)
-        "TestJvmUser.java" || "TestJvmTicket.java" || "TestJvmProfile.java" ||
-        "JvmContractSpec.scala"
+        new sbt.io.SimpleFileFilter(f =>
+          f.getName.startsWith("TestJvm") && f.getName.endsWith(".java")
+        ) ||
+        "JvmContractSpec.scala"      ||
+        "JvmAspectSpec.scala"        ||
+        "JvmAspectInheritSpec.scala" ||
+        "JvmCrossFeatureSpec.scala"  ||
+        "TestJvmBookingRule.scala"   ||
+        "TestJvmInventoryRule.scala"
       else
         NothingFilter
     },

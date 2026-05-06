@@ -221,6 +221,28 @@ class JvmContract[T](
       case Left(cvs) => cvs.violations.map(JvmViolation.fromViolation).toList.asJava
 
   /**
+   * Validate a partial map and return both any violations and a [[JvmDraft]]
+   * for use in multi-step form workflows.
+   *
+   * When all supplied fields are valid, [[JvmDraftResult.isValid]] is `true`
+   * and [[JvmDraftResult.draft]] holds a [[JvmDraft]] that can be merged with
+   * drafts from subsequent steps and then finalised.
+   *
+   * When any supplied field is invalid the result carries the violations and
+   * an empty [[java.util.Optional]] for the draft.
+   */
+  def validatePartialAsDraft(raw: java.util.Map[String, AnyRef]): JvmDraftResult[T] =
+    impl.validatePartial(toScalaRaw(raw)) match
+      case Right(draft) =>
+        new JvmDraftResult[T](
+          java.util.Collections.emptyList[JvmViolation](),
+          java.util.Optional.of(new JvmDraft[T](draft))
+        )
+      case Left(cvs) =>
+        val errs = cvs.violations.map(JvmViolation.fromViolation).toList.asJava
+        new JvmDraftResult[T](errs, java.util.Optional.empty[JvmDraft[T]]())
+
+  /**
    * Sanitize a raw map.
    *
    * Strips `@internal` fields and replaces `@masked` field values with the
@@ -350,6 +372,29 @@ class JvmContract[T](
    */
   def extraFields(raw: java.util.Map[String, AnyRef]): java.util.Map[String, AnyRef] =
     deepToJava(impl.extraFields(toScalaRaw(raw))).asInstanceOf[java.util.Map[String, AnyRef]]
+
+  /**
+   * Return a [[JvmFilter]][T] builder for constructing type-safe filter
+   * expressions over this contract's fields.
+   *
+   * Field names are specified as strings at runtime — use the same names
+   * declared in your `@contract` data class.
+   *
+   * {{{
+   * // Kotlin
+   * val f = userContract.filter
+   * val expr = f.field("age").gte(18)
+   *     .and(f.field("name").startsWith("A"))
+   *     .and(f.field("email").exists())
+   *
+   * val matching = expr.apply(allUsersRaw)
+   * val mongoQ   = expr.toMongoQuery()
+   * }}}
+   */
+  def filter: JvmFilter[T] = new JvmFilter[T]
+
+  private[concentric] def finalizeDraft(draft: Draft[T]): ValidationResult[T] =
+    toResult(draft.finalize(impl))
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -506,7 +551,7 @@ class JvmContract[T](
     }
     builder.result()
 
-  private def toResult(either: Either[ContractViolations, T]): ValidationResult[T] =
+  private[concentric] def toResult(either: Either[ContractViolations, T]): ValidationResult[T] =
     either match
       case Right(t)  => ValidationResult.success(t)
       case Left(cvs) =>

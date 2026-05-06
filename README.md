@@ -40,6 +40,7 @@ concentric turns an annotated case class (or Java record / Kotlin data class) in
 - [@decodable and @extract — structured string types](#decodable-and-extract--structured-string-types)
 - [Open contracts](#open-contracts)
 - [Aspects — structural variants of a contract](#aspects--structural-variants-of-a-contract)
+- [inherit = ALL — exhaustive field accounting](#inherit--all--exhaustive-field-accounting)
 - [jsonSchema — derive a JSON Schema document](#jsonschema--derive-a-json-schema-document)
 
 ### Reference
@@ -2189,6 +2190,208 @@ configPatchContract.validate(mapOf("key" to "k", "extra" to "x"))
 
 ---
 
+## inherit = ALL — exhaustive field accounting
+
+By default, `@aspectOf` operates in **EXPLICIT** mode: the aspect freely picks which source fields to include, and any fields it omits are silently excluded with no error. This is the right choice for most PATCH variants, where the aspect intentionally exposes only a subset of the source.
+
+For scenarios where you want a **compile-time guarantee** that every source field has been consciously accounted for, set `inherit = true`. Every field in the source must then be either **declared** in the aspect or **explicitly excluded** via the `exclude` parameter — otherwise the code does not compile.
+
+### Declaring a fully-exhaustive aspect
+
+```scala
+@contract
+case class User(
+  @internal @immutable val id:    Long,
+  @email               val email: String,
+  @nonEmpty @maxLength(100) val name: String,
+  @reserved            val role:  Option[String] = None,
+  @masked              val token: Option[String] = None
+) derives Contract
+
+// Every source field is accounted for:
+//   id, email, name  — declared
+//   role, token      — excluded
+@aspectOf[User](inherit = true, exclude = Seq("role", "token"))
+case class UserPublicProfile(
+  val id:    Long,
+  val email: String,
+  val name:  String   // @email / @nonEmpty / @maxLength(100) inherited
+) derives Contract
+```
+
+With `inherit = true` the Scala macro checks at **compile time** that the union of declared fields and excluded names equals exactly the source's field set. A source field that is neither declared nor excluded is a **compile error**:
+
+```scala
+// Compile error — 'token' is not declared in UserBadAspect and not listed in exclude
+@aspectOf[User](inherit = true, exclude = Seq("role"))
+case class UserBadAspect(
+  val id:    Long,
+  val email: String,
+  val name:  String
+) derives Contract
+```
+
+This mode is called "ALL" because **all** source fields must be accounted for. It is especially valuable when the source contract grows: a new field added to `User` immediately causes a compile error in every `inherit = true` aspect that has not yet handled it, rather than silently being missing from output.
+
+### Optional fields with inherit = ALL
+
+Aspect fields can be `Option[T]` even when `inherit = true`. Absent optional fields are accepted, and inherited constraints are applied only when a value is present:
+
+```scala
+@aspectOf[User](inherit = true, exclude = Seq("role", "token"))
+case class UserProfilePatch(
+  val id:    Long,
+  val email: Option[String] = None,  // @email inherited — only checked when present
+  val name:  Option[String] = None   // @nonEmpty / @maxLength(100) — only checked when present
+) derives Contract
+```
+
+### Constraint override with inherit = ALL
+
+Local annotations on aspect fields override the corresponding inherited ones, as in EXPLICIT mode:
+
+```scala
+@aspectOf[User](inherit = true, exclude = Seq("role", "token"))
+case class UserProfileStrict(
+  val id:    Long,
+  val email: String,
+  @maxLength(20) val name: String   // tighter than User's @maxLength(100)
+) derives Contract
+```
+
+### inherit = ALL with an open source contract
+
+`inherit = true` also works when the source derives `OpenContract`. The resulting aspect is always **closed** — unknown fields are rejected even if the source accepts them:
+
+```scala
+case class Product(
+  @nonEmpty val sku:   String,
+  @min(0)   val price: Double
+) derives OpenContract  // source accepts unknown keys
+
+// All source fields declared, nothing excluded
+@aspectOf[Product](inherit = true)
+case class ProductFull(
+  val sku:   Option[String] = None,  // @nonEmpty inherited
+  val price: Option[Double] = None   // @min(0) inherited
+) derives Contract
+// ProductFull is closed even though Product is open
+```
+
+### Compile-time error cases
+
+| Mistake | Compile error |
+|---|---|
+| Source field neither declared nor excluded | `source field 'X' is neither declared … nor listed in exclude` |
+| Multiple unaccounted source fields | All missing names listed in one message |
+| `exclude` name not in source | `'X' is listed in exclude but is not a field of SourceType` |
+| `exclude` used without `inherit = true` | `` `exclude` is only valid when `inherit = true` `` |
+
+<details>
+<summary>Java</summary>
+
+On the JVM side, `inherit = ALL` is enforced at **runtime** when `JvmContract.ofAspect` constructs the contract — it throws `IllegalArgumentException` immediately if any source field is unaccounted for.
+
+Annotate the aspect record with `inherit = aspectOf.InheritMode.ALL` and list excluded field names in `exclude`:
+
+```java
+import io.concentric.annotations.*;
+import io.concentric.JvmContract;
+import java.util.Optional;
+
+@contract
+public record User(
+    @immutable @internal            Long   id,
+    @nonEmpty  @maxLength(100)      String name,
+    @email                          String email,
+    @min(0) @max(150)               int    age,
+    @masked                         String password
+) {}
+
+// id, name, email declared; age and password excluded
+@aspectOf(value = User.class,
+          inherit = aspectOf.InheritMode.ALL,
+          exclude = {"age", "password"})
+public record UserPublicProfile(
+    Long   id,     // @immutable not inherited
+    String name,   // @nonEmpty @maxLength(100) inherited
+    String email   // @email inherited
+) {}
+
+JvmContract<UserPublicProfile> profileContract =
+    JvmContract.ofAspect(UserPublicProfile.class, User.class);
+// Throws IllegalArgumentException immediately if any source field is unaccounted for.
+```
+
+Optional fields are supported exactly as in EXPLICIT mode — declare them as `Optional<T>`:
+
+```java
+@aspectOf(value = User.class,
+          inherit = aspectOf.InheritMode.ALL,
+          exclude = {"password"})
+public record UserOptionalProfile(
+    Long              id,
+    Optional<String>  name,   // @nonEmpty @maxLength(100) inherited — only if present
+    Optional<Integer> age,    // @min(0) @max(150) inherited — only if present
+    Optional<String>  email   // @email inherited — only if present
+) {}
+```
+
+`ofAspect` validates at construction time that `inherit = ALL` is satisfied. It throws `IllegalArgumentException` with a message naming **all** unaccounted fields if any are missing — not just the first one found.
+
+</details>
+
+<details>
+<summary>Kotlin</summary>
+
+```kotlin
+import io.concentric.annotations.*
+import io.concentric.annotations.aspectOf
+import io.concentric.JvmContract
+import java.util.Optional
+
+@contract
+data class User(
+    @field:immutable @field:internal val id:       Long,
+    @field:nonEmpty  @field:maxLength(100) val name: String,
+    @field:email                     val email:    String,
+    @field:min(0) @field:max(150)    val age:      Int,
+    @field:masked                    val password: String?
+)
+
+// id, name, email declared; age and password excluded
+@aspectOf(value = User::class.java,
+          inherit = aspectOf.InheritMode.ALL,
+          exclude = ["age", "password"])
+data class UserPublicProfile(
+    val id:    Long,             // @immutable not inherited
+    val name:  String,           // @nonEmpty @maxLength(100) inherited
+    val email: String            // @email inherited
+)
+
+val profileContract: JvmContract<UserPublicProfile> =
+    JvmContract.ofAspectPrimary(UserPublicProfile::class.java, User::class.java)
+// Throws IllegalArgumentException if any source field is unaccounted for.
+```
+
+Optional fields work the same way:
+
+```kotlin
+@aspectOf(value = User::class.java,
+          inherit = aspectOf.InheritMode.ALL,
+          exclude = ["password"])
+data class UserOptionalProfile(
+    val id:    Long,
+    val name:  Optional<String> = Optional.empty(),   // @nonEmpty inherited — only if present
+    val age:   Optional<Int>    = Optional.empty(),   // @min(0) inherited — only if present
+    val email: Optional<String> = Optional.empty()    // @email inherited — only if present
+)
+```
+
+</details>
+
+---
+
 ## jsonSchema — derive a JSON Schema document
 
 Every contract can export a JSON Schema (draft-07) document reflecting its annotations.
@@ -2377,6 +2580,7 @@ result.getErrors()              // List<JvmViolation> — empty when valid
 | `validatePatch(Map, Map)` | Patch validation against current state. |
 | `validatePatch(Map, JvmPatch)` | Patch validation using the fluent JVM patch builder. |
 | `validatePartial(Map)` | Partial validation — returns `List<JvmViolation>`, no missing-field errors. |
+| `validatePartialAsDraft(Map)` | Partial validation for multi-step workflows — returns `JvmDraftResult<T>` containing violations and, when valid, a `JvmDraft<T>` that can be merged with drafts from subsequent steps and then finalized. |
 | `collectViolations(Map)` | All violations without constructing T. |
 | `sanitize(Map)` | Strips `@internal`, masks `@masked`. Returns `Map<String, Object>`. |
 | `sanitizeJson(Map)` | Same as `sanitize` but returns a compact JSON string. |

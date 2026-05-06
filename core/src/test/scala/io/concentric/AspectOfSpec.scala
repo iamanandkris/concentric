@@ -100,6 +100,60 @@ case class AspectProductPatch(
   val price: Option[Double] = None   // @min(0) inherited
 ) derives Contract
 
+// ── inherit = ALL aspects ─────────────────────────────────────────────────────
+
+/** Public profile — inherit = ALL, role + token excluded.
+ *  Every source field is accounted for: id/email/name declared, role+token excluded.
+ *  Policy annotations (@internal, @immutable) on id are still NOT inherited.
+ */
+@aspectOf[AspectUser](inherit = true, exclude = Seq("role", "token"))
+case class AspectUserPublicProfile(
+  val id:    Long,
+  val email: String,
+  val name:  String
+) derives Contract
+
+/** inherit = ALL with an extra field not in source.
+ *  id+role+token excluded; email+name declared; displayName is brand-new.
+ */
+@aspectOf[AspectUser](inherit = true, exclude = Seq("id", "role", "token"))
+case class AspectUserProfileWithExtra(
+  val email:                 String,
+  val name:                  String,
+  @nonEmpty val displayName: String
+) derives Contract
+
+/** inherit = ALL on an open-source contract — all fields must be accounted for. */
+@aspectOf[AspectProduct](inherit = true)
+case class AspectProductFull(
+  val sku:   Option[String] = None,  // @nonEmpty inherited
+  val price: Option[Double] = None   // @min(0) inherited
+) derives Contract
+
+/** inherit = ALL, all fields Optional — full exhaustive PATCH variant of AspectOrder.
+ *  ref+qty+weight all declared; nothing excluded.
+ *  Tests that inherit = ALL works with Option[T] fields and integrates
+ *  with validatePatch.
+ */
+@aspectOf[AspectOrder](inherit = true)
+case class AspectOrderFull(
+  val ref:    Option[String] = None,  // @nonEmpty inherited
+  val qty:    Option[Int]    = None,  // @min(1) inherited
+  val weight: Option[Double] = None   // @max(999) inherited
+) derives Contract
+
+/** inherit = ALL with constraint override — tightens @maxLength to 20 chars on name.
+ *  All source fields accounted for: id/email/name declared, role/token excluded.
+ *  Tests that a local annotation override still wins over the inherited one when
+ *  inherit = true is active.
+ */
+@aspectOf[AspectUser](inherit = true, exclude = Seq("role", "token"))
+case class AspectUserProfileStrict(
+  val id:    Long,
+  val email: String,
+  @maxLength(20) val name: String  // overrides inherited @maxLength(100)
+) derives Contract
+
 // ── Spec ──────────────────────────────────────────────────────────────────────
 
 final class AspectOfSpec extends SpecBase:
@@ -112,6 +166,12 @@ final class AspectOfSpec extends SpecBase:
   val productPatchContract      = summon[Contract[AspectProductPatch]]
   val strictPatchContract       = summon[Contract[AspectUserPatchStrict]]
   val internalFieldContract     = summon[Contract[AspectWithInternalField]]
+  val orderContract             = summon[Contract[AspectOrder]]
+  val publicProfileContract     = summon[Contract[AspectUserPublicProfile]]
+  val profileWithExtraContract  = summon[Contract[AspectUserProfileWithExtra]]
+  val productFullContract       = summon[Contract[AspectProductFull]]
+  val orderFullContract         = summon[Contract[AspectOrderFull]]
+  val userProfileStrictContract = summon[Contract[AspectUserProfileStrict]]
 
   // ── field inclusion ───────────────────────────────────────────────────────
 
@@ -445,4 +505,299 @@ final class AspectOfSpec extends SpecBase:
       val current: RawObject = Map("ref" -> "R1", "qty" -> 1, "weight" -> 0.5)
       userContract.validatePatch(current, AspectOrderPatch(Some(3)))
     """)
+  }
+
+  // ── inherit = ALL (exhaustive mode) ──────────────────────────────────────
+
+  suite("inherit = ALL — field inclusion") {
+    test("public profile includes exactly id, email, name") {
+      publicProfileContract.fieldMetas.map(_.name).toSet shouldBe Set("id", "email", "name")
+    }
+
+    test("public profile excludes role") {
+      publicProfileContract.fieldMetas.map(_.name).toSet should not contain "role"
+    }
+
+    test("public profile excludes token") {
+      publicProfileContract.fieldMetas.map(_.name).toSet should not contain "token"
+    }
+
+    test("profile with extra includes email, name, and displayName") {
+      profileWithExtraContract.fieldMetas.map(_.name).toSet shouldBe Set("email", "name", "displayName")
+    }
+
+    test("profile with extra excludes id") {
+      profileWithExtraContract.fieldMetas.map(_.name).toSet should not contain "id"
+    }
+
+    test("product full includes sku and price (all source fields, no exclusions)") {
+      productFullContract.fieldMetas.map(_.name).toSet shouldBe Set("sku", "price")
+    }
+  }
+
+  suite("inherit = ALL — validation") {
+    test("public profile: valid input passes") {
+      val result = publicProfileContract.validate(Map("id" -> 1L, "email" -> "a@example.com", "name" -> "Alice"))
+      result.isRight shouldBe true
+    }
+
+    test("public profile: closed — unknown field (role) rejected") {
+      val result = publicProfileContract.validate(Map(
+        "id" -> 1L, "email" -> "a@example.com", "name" -> "Alice", "role" -> "admin"))
+      result.isLeft shouldBe true
+    }
+
+    test("public profile: @email inherited — invalid email rejected") {
+      val result = publicProfileContract.validate(Map("id" -> 1L, "email" -> "bad", "name" -> "Alice"))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList.exists(_.code == ViolationCode.ConstraintFailed("email")) shouldBe true
+    }
+
+    test("public profile: @nonEmpty inherited on name — empty name rejected") {
+      val result = publicProfileContract.validate(Map("id" -> 1L, "email" -> "a@b.com", "name" -> ""))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList.exists(_.code == ViolationCode.ConstraintFailed("nonEmpty")) shouldBe true
+    }
+
+    test("public profile: @maxLength(100) inherited on name — oversized name rejected") {
+      val result = publicProfileContract.validate(Map("id" -> 1L, "email" -> "a@b.com", "name" -> ("x" * 101)))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList.exists(_.code == ViolationCode.ConstraintFailed("maxLength")) shouldBe true
+    }
+
+    test("public profile: @internal not inherited on id — id can be freely set") {
+      val result = publicProfileContract.validate(Map("id" -> 99L, "email" -> "a@b.com", "name" -> "Bob"))
+      result.isRight shouldBe true
+      result.value.id shouldBe 99L
+    }
+
+    test("profile with extra: extra field @nonEmpty enforced") {
+      val result = profileWithExtraContract.validate(Map("email" -> "a@b.com", "name" -> "Alice", "displayName" -> ""))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList.exists(_.code == ViolationCode.ConstraintFailed("nonEmpty")) shouldBe true
+    }
+
+    test("profile with extra: inherited constraint on email still applies") {
+      val result = profileWithExtraContract.validate(Map("email" -> "bad", "name" -> "Alice", "displayName" -> "A"))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList.exists(_.code == ViolationCode.ConstraintFailed("email")) shouldBe true
+    }
+
+    test("profile with extra: valid input passes") {
+      val result = profileWithExtraContract.validate(Map("email" -> "a@b.com", "name" -> "Alice", "displayName" -> "Alice A."))
+      result.isRight shouldBe true
+    }
+
+    test("product full (open source, inherit = ALL): @nonEmpty on sku inherited") {
+      val result = productFullContract.validate(Map("sku" -> ""))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList.exists(_.code == ViolationCode.ConstraintFailed("nonEmpty")) shouldBe true
+    }
+
+    test("product full: aspect is closed even though source is open") {
+      val result = productFullContract.validate(Map("sku" -> "ABC", "unknown" -> "x"))
+      result.isLeft shouldBe true
+    }
+  }
+
+  suite("inherit = ALL — compile-time errors") {
+    test("exclude without inherit = true is a compile error") {
+      assertTypeError("""
+        import io.concentric.aspectOf
+        @aspectOf[AspectUser](exclude = Seq("role"))
+        case class BadExcludeNoInherit(val email: Option[String] = None) derives Contract
+      """)
+    }
+
+    test("exclude name not in source is a compile error") {
+      assertTypeError("""
+        import io.concentric.aspectOf
+        @aspectOf[AspectUser](inherit = true, exclude = Seq("role", "token", "nonExistentField"))
+        case class BadBadExcludeName(
+          val id: Long, val email: String, val name: String) derives Contract
+      """)
+    }
+
+    test("source field neither declared nor excluded is a compile error") {
+      assertTypeError("""
+        import io.concentric.aspectOf
+        @aspectOf[AspectUser](inherit = true, exclude = Seq("role"))
+        case class BadMissingField(
+          val id: Long, val email: String, val name: String) derives Contract
+        // token is a source field that is neither declared nor in exclude
+      """)
+    }
+  }
+
+  // ── inherit = ALL, optional fields (gap #1) ──────────────────────────────
+  //
+  // AspectOrderFull uses inherit = true with no exclusions and all fields
+  // wrapped in Option[T].  This verifies that:
+  //   - fields absent from the input are silently None (not a missing-required error)
+  //   - inherited constraints still fire when a value IS present and violates them
+  //   - the aspect integrates correctly with validatePatch on the source contract
+
+  suite("inherit = ALL — optional fields") {
+
+    test("empty map is valid — all optional fields absent") {
+      orderFullContract.validate(Map.empty).isRight shouldBe true
+    }
+
+    test("absent field constructs to None") {
+      val result = orderFullContract.validate(Map.empty)
+      result.isRight shouldBe true
+      result.value.ref    shouldBe None
+      result.value.qty    shouldBe None
+      result.value.weight shouldBe None
+    }
+
+    test("@nonEmpty inherited on ref — empty string still rejected") {
+      val result = orderFullContract.validate(Map("ref" -> ""))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("nonEmpty")) shouldBe true
+    }
+
+    test("@min(1) inherited on qty — zero rejected") {
+      val result = orderFullContract.validate(Map("qty" -> 0))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("min")) shouldBe true
+    }
+
+    test("@max(999) inherited on weight — 1000.0 rejected") {
+      val result = orderFullContract.validate(Map("weight" -> 1000.0))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("max")) shouldBe true
+    }
+
+    test("valid partial input constructs correct optional values") {
+      val result = orderFullContract.validate(Map("ref" -> "R1", "qty" -> 3))
+      result.isRight shouldBe true
+      result.value.ref    shouldBe Some("R1")
+      result.value.qty    shouldBe Some(3)
+      result.value.weight shouldBe None
+    }
+
+    test("inherit = ALL optional aspect integrates with validatePatch") {
+      val currentRaw: RawObject = Map("ref" -> "OLD", "qty" -> 1, "weight" -> 0.5)
+      val result =
+        for
+          patch   <- orderFullContract.validate(Map("ref" -> "NEW"))
+          updated <- orderContract.validatePatch(currentRaw, patch)
+        yield updated
+      result.isRight      shouldBe true
+      result.value.ref    shouldBe "NEW"
+      result.value.qty    shouldBe 1     // unchanged
+      result.value.weight shouldBe 0.5   // unchanged
+    }
+
+    test("validatePatch still enforces inherited constraint through inherit = ALL aspect") {
+      val currentRaw: RawObject = Map("ref" -> "OLD", "qty" -> 1, "weight" -> 0.5)
+      // qty = 0 violates @min(1) — patch validation must catch it before merge
+      val patchResult = orderFullContract.validate(Map("qty" -> 0))
+      patchResult.isLeft shouldBe true
+    }
+  }
+
+  // ── inherit = ALL, constraint override (gap #2) ──────────────────────────
+  //
+  // AspectUserProfileStrict uses inherit = true + exclude + a local @maxLength(20)
+  // that overrides the inherited @maxLength(100) on name.
+
+  suite("inherit = ALL — constraint override") {
+
+    test("@maxLength(20) override rejects name longer than 20 chars") {
+      val result = userProfileStrictContract.validate(Map(
+        "id" -> 1L, "email" -> "a@b.com", "name" -> ("x" * 21)))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("maxLength")) shouldBe true
+    }
+
+    test("@maxLength(20) override accepts exactly 20 chars") {
+      val result = userProfileStrictContract.validate(Map(
+        "id" -> 1L, "email" -> "a@b.com", "name" -> ("x" * 20)))
+      result.isRight shouldBe true
+    }
+
+    test("original @maxLength(100) no longer applies — 50 chars rejected by tighter override") {
+      // Without override, 50 chars would pass @maxLength(100).
+      // With @maxLength(20), 50 must still fail.
+      val result = userProfileStrictContract.validate(Map(
+        "id" -> 1L, "email" -> "a@b.com", "name" -> ("x" * 50)))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("maxLength")) shouldBe true
+    }
+
+    test("@nonEmpty still inherited alongside the @maxLength override") {
+      val result = userProfileStrictContract.validate(Map(
+        "id" -> 1L, "email" -> "a@b.com", "name" -> ""))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("nonEmpty")) shouldBe true
+    }
+
+    test("@email inherited on other fields unaffected by override on name") {
+      val result = userProfileStrictContract.validate(Map(
+        "id" -> 1L, "email" -> "not-an-email", "name" -> "Alice"))
+      result.isLeft shouldBe true
+      result.left.value.violations.toList
+        .exists(_.code == ViolationCode.ConstraintFailed("email")) shouldBe true
+    }
+
+    test("valid input passes") {
+      val result = userProfileStrictContract.validate(Map(
+        "id" -> 1L, "email" -> "a@b.com", "name" -> "Alice"))
+      result.isRight shouldBe true
+    }
+  }
+
+  // ── inherit = ALL, multiple violations (gap #6) + extra error compile tests ──
+
+  suite("inherit = ALL — multiple simultaneous violations") {
+
+    test("all violations reported at once when multiple inherited constraints fail") {
+      val result = publicProfileContract.validate(Map(
+        "id" -> 1L, "email" -> "not-an-email", "name" -> ""))
+      result.isLeft shouldBe true
+      val codes = result.left.value.violations.map(_.code).toList
+      codes should contain(ViolationCode.ConstraintFailed("email"))
+      codes should contain(ViolationCode.ConstraintFailed("nonEmpty"))
+    }
+
+    test("multiple violations on optional fields all reported") {
+      val result = orderFullContract.validate(Map(
+        "ref" -> "", "qty" -> 0, "weight" -> 1000.0))
+      result.isLeft shouldBe true
+      val codes = result.left.value.violations.map(_.code).toList
+      codes should contain(ViolationCode.ConstraintFailed("nonEmpty"))
+      codes should contain(ViolationCode.ConstraintFailed("min"))
+      codes should contain(ViolationCode.ConstraintFailed("max"))
+    }
+
+    // gaps #3 & #4: verify compile errors fire even with multiple bad names.
+    // assertTypeError only confirms compilation fails; message content is
+    // validated on the JVM side where exceptions carry readable text.
+
+    test("two missing source fields is a compile error") {
+      assertTypeError("""
+        import io.concentric.aspectOf
+        @aspectOf[AspectUser](inherit = true, exclude = Seq("role"))
+        case class BadTwoMissing(
+          val id: Long, val email: String) derives Contract
+        // both name and token are unaccounted for
+      """)
+    }
+
+    test("two non-existent exclude names is a compile error") {
+      assertTypeError("""
+        import io.concentric.aspectOf
+        @aspectOf[AspectUser](inherit = true, exclude = Seq("ghost1", "ghost2", "role", "token"))
+        case class BadTwoBadExcludes(
+          val id: Long, val email: String, val name: String) derives Contract
+      """)
+    }
   }

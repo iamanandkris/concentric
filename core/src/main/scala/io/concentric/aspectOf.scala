@@ -53,6 +53,18 @@ package io.concentric
  * generation entirely — they are neither required nor optional; they simply do
  * not exist in this contract variant.
  *
- * @tparam S  The source contract type this aspect is derived from.
+ * @tparam S       The source contract type this aspect is derived from.
+ * @param inherit  When `true`, enables exhaustiveness checking: every field of
+ *                 `S` must either be declared in this class or listed in
+ *                 `exclude`.  Adding a new field to `S` without updating here
+ *                 becomes a compile error.  Defaults to `false` (opt-in, current
+ *                 behaviour unchanged).
+ * @param exclude  Source field names to explicitly omit when `inherit = true`.
+ *                 Each name must exist in `S`; using a non-existent name or
+ *                 specifying `exclude` without `inherit = true` is a compile
+ *                 error.  Ignored when `inherit = false`.
  */
-class aspectOf[S <: Product] extends scala.annotation.StaticAnnotation
+class aspectOf[S <: Product](
+  val inherit: Boolean     = false,
+  val exclude: Seq[String] = Nil
+) extends scala.annotation.StaticAnnotation
